@@ -13,14 +13,18 @@
  */
 
 export {
+  DEFAULT_IMPORTANCE,
   forgetPreference,
   liveProfile,
+  MAX_IMPORTANCE,
   MAX_VALUE_LENGTH,
   preferenceCategorySchema,
   renderProfile,
+  renderProfileDetailed,
   writePreference,
   type Preference,
   type PreferenceCategory,
+  type RenderedProfile,
   type WriteOptions,
   type WriteRejection,
   type WriteResult,
@@ -63,3 +67,25 @@ export {
   type BrainDocument,
   type RenderBrainOptions,
 } from "./brain.js";
+
+export {
+  addDirective,
+  directiveKindSchema,
+  liveDirectives,
+  MAX_RULE_LENGTH,
+  renderDirectives,
+  revokeDirective,
+  type AddDirectiveOptions,
+  type Directive,
+  type DirectiveKind,
+  type DirectiveRejection,
+  type DirectiveResult,
+} from "./directives.js";
+
+export {
+  exportMemory,
+  parseMemoryMarkdown,
+  type ExportOptions,
+  type MemoryExport,
+  type ParsedFact,
+} from "./export.js";

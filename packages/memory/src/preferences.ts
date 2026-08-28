@@ -42,9 +42,18 @@ export interface Preference {
   readonly category: PreferenceCategory;
   readonly provenance: Provenance;
   readonly observedAt: number;
+  /**
+   * 1-10. Governs what survives when the profile is rendered under a size
+   * budget: dropping facts alphabetically is arbitrary, and would as happily
+   * discard a severe allergy as a favourite colour.
+   */
+  readonly importance: number;
   /** Set when a newer statement replaced this one. */
   readonly supersededAt?: number;
 }
+
+export const DEFAULT_IMPORTANCE = 5;
+export const MAX_IMPORTANCE = 10;
 
 export type WriteRejection = "untrusted-provenance" | "empty-value" | "value-too-long";
 
@@ -62,6 +71,7 @@ export interface WriteOptions {
   readonly value: string;
   readonly category: PreferenceCategory;
   readonly provenance: Provenance;
+  readonly importance?: number;
   readonly now: number;
 }
 
@@ -101,6 +111,7 @@ export function writePreference(options: WriteOptions): WriteResult {
     value,
     category: options.category,
     provenance: options.provenance,
+    importance: clampImportance(options.importance ?? DEFAULT_IMPORTANCE),
     observedAt: options.now,
   });
 
@@ -140,27 +151,69 @@ export function forgetPreference(
   );
 }
 
+function clampImportance(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_IMPORTANCE;
+  return Math.min(MAX_IMPORTANCE, Math.max(1, Math.round(value)));
+}
+
 /**
  * Render the profile for a prompt.
  *
- * Bounded on purpose: an unbounded profile would grow until it crowded out the
- * actual conversation, and the cost of every turn scales with it.
+ * Unbounded by default, deliberately. Silently dropping a fact the user took the
+ * trouble to state is a correctness bug, not a saving: if someone mentions a
+ * severe allergy and it falls off the end of a render, the agent behaves wrong
+ * and nobody finds out. Modern context windows make a few kilobytes of profile
+ * irrelevant next to that risk.
+ *
+ * A caller may still impose a budget for a genuinely constrained surface, but
+ * anything omitted is *returned*, never swallowed — so the caller can warn the
+ * user, prune, or escalate rather than quietly losing it.
  */
-export function renderProfile(
+export interface RenderedProfile {
+  readonly text: string;
+  /** Facts left out by a budget. Empty when rendering was unbounded. */
+  readonly omitted: readonly Preference[];
+}
+
+export function renderProfileDetailed(
   preferences: readonly Preference[],
   workspaceId: string,
-  maxChars = 2000
-): string {
+  maxChars?: number
+): RenderedProfile {
   const live = liveProfile(preferences, workspaceId);
-  if (live.length === 0) return "";
+  if (live.length === 0) return { text: "", omitted: [] };
+
+  // Most important first, so a budget (when one exists) sheds the least
+  // consequential facts rather than the alphabetically unlucky ones.
+  const ordered = [...live].sort((a, b) => b.importance - a.importance || (a.key < b.key ? -1 : 1));
+
+  if (maxChars === undefined) {
+    return {
+      text: ordered.map((p) => `- ${p.key}: ${p.value}`).join("\n"),
+      omitted: [],
+    };
+  }
 
   const lines: string[] = [];
+  const omitted: Preference[] = [];
   let used = 0;
-  for (const preference of live) {
+  for (const preference of ordered) {
     const line = `- ${preference.key}: ${preference.value}`;
-    if (used + line.length > maxChars) break;
+    if (used + line.length > maxChars) {
+      omitted.push(preference);
+      continue;
+    }
     lines.push(line);
     used += line.length + 1;
   }
-  return lines.join("\n");
+  return { text: lines.join("\n"), omitted };
+}
+
+/** Convenience wrapper returning just the text. Unbounded unless told otherwise. */
+export function renderProfile(
+  preferences: readonly Preference[],
+  workspaceId: string,
+  maxChars?: number
+): string {
+  return renderProfileDetailed(preferences, workspaceId, maxChars).text;
 }
