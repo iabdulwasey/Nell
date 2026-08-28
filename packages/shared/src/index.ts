@@ -27,3 +27,11 @@ export {
   type Provenance,
   type Provenanced,
 } from "./provenance.js";
+
+export {
+  isE164,
+  maskPhoneNumber,
+  normalizePhoneNumber,
+  supportedRegions,
+  type Region,
+} from "./phone.js";
