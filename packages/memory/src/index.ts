@@ -38,3 +38,19 @@ export {
   type RecordOptions,
   type TaskOutcome,
 } from "./ledger.js";
+
+export {
+  checkTypeSchema,
+  claimDue,
+  completeRun,
+  decideFire,
+  digestOf,
+  LEASE_MS,
+  MAX_CLAIMS_PER_TICK,
+  preChecks,
+  runPreCheck,
+  type CheckType,
+  type FireDecision,
+  type Monitor,
+  type Observation,
+} from "./monitors.js";
