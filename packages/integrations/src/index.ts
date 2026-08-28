@@ -1,13 +1,24 @@
 /**
  * @nell/integrations
  *
- * OAuth-held connectors (Gmail, Calendar, Slack, ...) behind quarantined readers that emit only schema-validated data — raw untrusted prose never shares a context with tool access.
+ * Connectors to third-party accounts, behind quarantined readers.
+ *
+ * The rule that shapes this package: raw third-party prose and tool access never
+ * share a context. Content goes to an extractor with no tools, which returns
+ * schema-validated fields tagged untrusted; the planner sees only that.
  *
  * Governed by: docs/security-model.md
- *
- * Status: scaffold stub. Implementation lands per the roadmap.
  */
 
-// TODO(phase-0): implement per the referenced doc.
-
-export const __stub = true;
+export {
+  detectSuspiciousContent,
+  extract,
+  extractOtp,
+  messageSummarySchema,
+  otpExtractionSchema,
+  type Extracted,
+  type Extractor,
+  type MessageSummary,
+  type OtpExtraction,
+  type RawContent,
+} from "./quarantine.js";
