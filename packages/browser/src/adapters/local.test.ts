@@ -7,6 +7,7 @@
  * network flakiness, no rate limits.
  */
 
+import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { accessScopeForUser } from "@nell/shared";
@@ -22,7 +23,9 @@ import { LocalBrowserProvider } from "./local.js";
  */
 function chromiumAvailable(): boolean {
   try {
-    return Boolean(chromium.executablePath());
+    // executablePath() returns a path whether or not the browser was ever
+    // downloaded, so the path alone proves nothing — check it exists on disk.
+    return existsSync(chromium.executablePath());
   } catch {
     return false;
   }
