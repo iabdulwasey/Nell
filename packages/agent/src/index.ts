@@ -51,3 +51,12 @@ export {
   type ProgressEvent,
   type RouteTarget,
 } from "./steering.js";
+
+export {
+  assertNoSecrets,
+  composeBriefing,
+  type Briefing,
+  type BriefingInput,
+  type BudgetEnvelope,
+  type VaultHandle,
+} from "./briefing.js";
