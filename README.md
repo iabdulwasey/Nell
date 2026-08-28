@@ -78,9 +78,31 @@ More detail and a full FAQ:
 
 ## Status
 
-Early scaffold. The architecture, roadmap, and design decisions live in
-[`docs/`](docs/). Contributions welcome — see
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+**Under active development — the trust core is built, the agent is not yet.**
+Not usable as a personal assistant today.
+
+What exists and is tested (119 tests, all packages typechecking):
+
+| Component                                                                 | State   |
+| ------------------------------------------------------------------------- | ------- |
+| Encrypted vault (AES-256-GCM, per-item binding, key rotation)             | ✅      |
+| Policy engine — spend approvals, origin allowlist, taint, provenance gate | ✅      |
+| Append-only hash-chained audit log                                        | ✅      |
+| Durable execution — crash-resume verified on real Postgres                | ✅      |
+| Tenant isolation — row-level security verified on PostgreSQL 17           | ✅      |
+| Typed browser action DSL (no code-execution escape hatch)                 | ✅      |
+| Model router with cost metering and circuit breaker                       | ✅      |
+| Anti-cheat eval harness with adversarial refusal scenarios                | ✅      |
+| `docker compose up` — Postgres + core service with health endpoints       | ✅      |
+| Browser adapters, agent runtime, channels, dashboard, memory              | 🚧 next |
+
+The security foundation is deliberately built first: every boundary that
+protects your money and credentials is enforced in code and covered by tests
+before any capability is layered on top. See [`docs/roadmap.md`](docs/roadmap.md)
+for what lands when, and [`docs/security-model.md`](docs/security-model.md) for
+how the boundaries work.
+
+Contributions welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Security
 

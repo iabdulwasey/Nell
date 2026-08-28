@@ -13,6 +13,7 @@
   "dependencies": {
     "@nell/shared": "workspace:*",
     "@nell/vault": "workspace:*",
+    "playwright-core": "1.56.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
