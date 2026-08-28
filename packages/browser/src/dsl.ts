@@ -1,0 +1,147 @@
+/**
+ * Typed browser action DSL.
+ *
+ * The agent drives a browser through this closed vocabulary — never by authoring
+ * code that the browser then executes. That is a deliberate boundary, not a
+ * convenience: arbitrary code on a session that has had a credential typed into
+ * it is an unbounded exfiltration channel (a secret can be encoded into a URL, a
+ * timing pattern, or a DOM mutation, none of which a response scrubber can
+ * catch). Removing the capability is a boundary; scrubbing it is a mitigation.
+ *
+ * Long-tail dexterity is recovered through vision fallback and reviewed,
+ * server-side recipe scripts — never through model-authored code.
+ */
+
+import { z } from "zod";
+
+/** How an element is addressed. Accessibility-first: stable and cheap. */
+export const targetSchema = z.union([
+  z.object({
+    by: z.literal("role"),
+    role: z.string().min(1).max(64),
+    name: z.string().min(1).max(300).optional(),
+    nth: z.number().int().nonnegative().max(50).optional(),
+  }),
+  z.object({ by: z.literal("label"), text: z.string().min(1).max(300) }),
+  z.object({ by: z.literal("placeholder"), text: z.string().min(1).max(300) }),
+  z.object({ by: z.literal("text"), text: z.string().min(1).max(300) }),
+  z.object({ by: z.literal("testId"), id: z.string().min(1).max(200) }),
+  /**
+   * CSS is the escape hatch. Bounded in length, and never a substitute for code
+   * execution: it selects an element, it does not run anything.
+   */
+  z.object({ by: z.literal("css"), selector: z.string().min(1).max(500) }),
+]);
+
+export type Target = z.infer<typeof targetSchema>;
+
+/**
+ * Navigable URL. Restricted to http/https on purpose: `javascript:`, `data:`,
+ * and `file:` are all technically valid URLs, and all three are ways to turn a
+ * navigation into code execution or local-file access.
+ */
+const navigableUrlSchema = z.string().refine((value) => {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+}, "Navigation must be an http(s) URL.");
+
+export const actionSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("goto"),
+    url: navigableUrlSchema,
+    waitUntil: z.enum(["domcontentloaded", "load"]).default("domcontentloaded"),
+  }),
+  z.object({ action: z.literal("click"), target: targetSchema }),
+  /**
+   * Types a literal, non-secret value. Secrets never travel through this action
+   * — they are injected server-side by the vault fill path, which the model
+   * cannot invoke with a raw value.
+   */
+  z.object({
+    action: z.literal("type"),
+    target: targetSchema,
+    text: z.string().max(2000),
+    clearFirst: z.boolean().default(true),
+  }),
+  z.object({
+    action: z.literal("select"),
+    target: targetSchema,
+    value: z.string().max(300),
+  }),
+  z.object({
+    action: z.literal("scroll"),
+    direction: z.enum(["up", "down"]),
+    amount: z.number().int().positive().max(5000).default(600),
+  }),
+  z.object({
+    action: z.literal("waitFor"),
+    target: targetSchema,
+    state: z.enum(["visible", "hidden"]).default("visible"),
+    timeoutMs: z.number().int().positive().max(15_000).default(5000),
+  }),
+  z.object({ action: z.literal("back") }),
+  /** Structured extraction: the model declares a shape, not a scraping script. */
+  z.object({
+    action: z.literal("extract"),
+    target: targetSchema.optional(),
+    fields: z.array(z.string().min(1).max(100)).min(1).max(30),
+  }),
+  z.object({ action: z.literal("screenshot"), fullPage: z.boolean().default(false) }),
+]);
+
+export type BrowserAction = z.infer<typeof actionSchema>;
+
+/** Actions are submitted in bounded batches to keep round-trips low. */
+export const actionBatchSchema = z.array(actionSchema).min(1).max(20);
+
+/**
+ * Map an action to the taint-machine operation class, so the policy engine can
+ * decide whether it is permitted on a session holding a filled credential.
+ */
+export function operationClassOf(
+  action: BrowserAction
+): "navigate" | "click" | "type" | "select" | "scroll" | "wait" | "read-text" | "screenshot" {
+  switch (action.action) {
+    case "goto":
+    case "back":
+      return "navigate";
+    case "click":
+      return "click";
+    case "type":
+      return "type";
+    case "select":
+      return "select";
+    case "scroll":
+      return "scroll";
+    case "waitFor":
+      return "wait";
+    case "extract":
+      return "read-text";
+    case "screenshot":
+      return "screenshot";
+  }
+}
+
+/**
+ * Reject targets that try to smuggle script execution through a CSS selector.
+ * Belt and braces: the executor never evaluates these strings as code, but a
+ * selector containing javascript: is a signal worth refusing outright.
+ */
+export function validateTarget(target: Target): void {
+  if (target.by !== "css") return;
+  if (/javascript:|<script|expression\(/iu.test(target.selector)) {
+    throw new Error("Refusing a selector that looks like script injection.");
+  }
+}
+
+export function parseActionBatch(input: unknown): BrowserAction[] {
+  const actions = actionBatchSchema.parse(input);
+  for (const action of actions) {
+    if ("target" in action && action.target) validateTarget(action.target);
+  }
+  return actions;
+}

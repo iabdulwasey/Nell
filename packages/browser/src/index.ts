@@ -1,13 +1,26 @@
 /**
  * @nell/browser
  *
- * The BrowserProvider port (Kernel + local Chromium adapters) and the typed browser-action DSL. No model-authored code runs on secret-bearing sessions.
+ * The BrowserProvider port (cloud + local-Chromium adapters) and the typed
+ * browser-action DSL. No model-authored code ever runs on a session.
  *
- * Governed by: docs/architecture.md
- *
- * Status: scaffold stub. Implementation lands per the roadmap.
+ * Governed by: docs/architecture.md, docs/security-model.md
  */
 
-// TODO(phase-0): implement per the referenced doc.
+export {
+  actionBatchSchema,
+  actionSchema,
+  operationClassOf,
+  parseActionBatch,
+  targetSchema,
+  validateTarget,
+  type BrowserAction,
+  type Target,
+} from "./dsl.js";
 
-export const __stub = true;
+export type {
+  ActionResult,
+  BrowserProvider,
+  BrowserSession,
+  CreateSessionOptions,
+} from "./provider.js";

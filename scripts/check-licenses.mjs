@@ -54,7 +54,9 @@ const review = all.filter((entry) => REVIEW.some((re) => re.test(entry.license))
 
 if (review.length > 0) {
   const names = [...new Set(review.map((entry) => `${entry.name} (${entry.license})`))];
-  console.log(`Note: ${String(names.length)} file-level-copyleft dependencies present (OK unmodified):`);
+  console.log(
+    `Note: ${String(names.length)} file-level-copyleft dependencies present (OK unmodified):`
+  );
   for (const name of names.slice(0, 10)) console.log(`  - ${name}`);
   if (names.length > 10) console.log(`  ... and ${String(names.length - 10)} more`);
 }
