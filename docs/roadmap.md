@@ -37,12 +37,21 @@ The security foundation, built before any user-facing capability.
 - ✅ **`docker compose up`** — Postgres plus a bootable core service with
   liveness/readiness endpoints, running as a restricted database role.
 
+- ✅ **Local Chromium browser adapter** — implements `BrowserProvider` over
+  Playwright, with seven integration tests driving a real browser against an
+  in-process server (navigation, form fill, extraction, screenshots, session
+  isolation, cross-workspace refusal).
+- ✅ **Phone auth** — OTP with peppered hash storage, constant-time comparison,
+  attempt caps and single-use consumption; single-use recovery codes; and
+  per-destination/per-origin send rate limits. Delivery is a port, so the flow
+  is fully tested without a provider account.
+
 **Remaining:**
 
-- `BrowserProvider` adapter implementations (cloud service + local Chromium).
-  The port and DSL exist; the adapters need vendor credentials to build against.
-- Full auth wiring (OTP delivery, passkeys, recovery codes) on top of the phone
-  identity layer.
+- A cloud browser adapter (persistent profiles, live view, session replay).
+  The `BrowserProvider` port is stable; this is adapter work behind a vendor
+  account.
+- Binding a real messaging provider to the delivery port.
 
 ## v1 — The magic demo
 

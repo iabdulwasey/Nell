@@ -81,7 +81,7 @@ More detail and a full FAQ:
 **Under active development — the trust core is built, the agent is not yet.**
 Not usable as a personal assistant today.
 
-What exists and is tested (119 tests, all packages typechecking):
+What exists and is tested (150 tests, all packages typechecking):
 
 | Component                                                                 | State   |
 | ------------------------------------------------------------------------- | ------- |
@@ -93,8 +93,10 @@ What exists and is tested (119 tests, all packages typechecking):
 | Typed browser action DSL (no code-execution escape hatch)                 | ✅      |
 | Model router with cost metering and circuit breaker                       | ✅      |
 | Anti-cheat eval harness with adversarial refusal scenarios                | ✅      |
+| Local Chromium browser adapter (tested against a real browser)            | ✅      |
+| Phone auth — OTP, recovery codes, send rate limiting                      | ✅      |
 | `docker compose up` — Postgres + core service with health endpoints       | ✅      |
-| Browser adapters, agent runtime, channels, dashboard, memory              | 🚧 next |
+| Agent runtime, channels, dashboard, memory, cloud browser                 | 🚧 next |
 
 The security foundation is deliberately built first: every boundary that
 protects your money and credentials is enforced in code and covered by tests
