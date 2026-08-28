@@ -54,3 +54,12 @@ export {
   type Monitor,
   type Observation,
 } from "./monitors.js";
+
+export {
+  BrainCache,
+  memoryVersion,
+  renderBrain,
+  renderBrainCached,
+  type BrainDocument,
+  type RenderBrainOptions,
+} from "./brain.js";
