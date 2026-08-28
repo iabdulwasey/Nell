@@ -1,6 +1,6 @@
 <div align="center">
 
-# Nell
+# Nell (Open Source Instinct)
 
 **Open Source Instinct — a personal AI agent you text to get things done.**
 
