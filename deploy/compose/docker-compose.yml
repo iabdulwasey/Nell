@@ -1,10 +1,12 @@
 # Nell self-host stack — the one-command deployment.
 #
-# The whole personal agent runs from this single image set with ONE stateful
-# dependency (Postgres). Commercial /ee features are not required to run this.
+# One stateful dependency (Postgres) and one application image. The personal
+# agent is fully functional here; commercial /ee features stay disabled without
+# a license key and are not needed to run Nell for yourself.
 #
-# Status: scaffold. Service images/build contexts are wired up in Phase 0 once
-# apps/core and apps/web are runnable. The shape below is the intended target.
+# Usage, from the repository root:
+#   cp .env.example .env      # set SECRET_ENCRYPTION_KEY at minimum
+#   docker compose -f deploy/compose/docker-compose.yml up
 
 name: nell
 
@@ -17,31 +19,38 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-nell}
     volumes:
       - nell-pgdata:/var/lib/postgresql/data
+      # Provisions the NOSUPERUSER application role. Without this the app would
+      # refuse to boot, because a superuser silently bypasses row-level security.
+      - ./init-app-role.sql:/docker-entrypoint-initdb.d/10-init-app-role.sql:ro
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nell}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # core:
-  #   build: ../../apps/core          # enabled in Phase 0
-  #   env_file: ../../.env
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #   ports: ["4000:4000"]
+  core:
+    build:
+      context: ../..
+      dockerfile: apps/core/Dockerfile
+    environment:
+      # The app connects as the restricted role, never as the owner.
+      DATABASE_URL: postgresql://nell_app:${NELL_APP_PASSWORD:-nell_app}@postgres:5432/${POSTGRES_DB:-nell}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
+      KERNEL_API_KEY: ${KERNEL_API_KEY:-}
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:-}
+      NELL_LICENSE_KEY: ${NELL_LICENSE_KEY:-}
+      PORT: "4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${CORE_PORT:-4000}:4000"
+    restart: unless-stopped
 
-  # web:
-  #   build: ../../apps/web           # enabled in v1
-  #   env_file: ../../.env
-  #   depends_on: [core]
-  #   ports: ["3000:3000"]
-
-  # browser:                          # local Chromium sidecar for self-host
-  #   image: nell/browser-sidecar     # built in Phase 0
-  #   ports: ["9222:9222"]
+  # web:      enabled in v1, once the dashboard exists
+  # browser:  local Chromium sidecar, enabled with the browser adapter
 
 volumes:
   nell-pgdata:

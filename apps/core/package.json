@@ -7,19 +7,28 @@
   "main": "./src/index.ts",
   "scripts": {
     "build": "echo \"no build yet\" && exit 0",
-    "dev": "echo \"core dev server not implemented yet\" && exit 0",
+    "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"no tests yet\" && exit 0"
+    "test": "vitest run --passWithNoTests",
+    "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@hono/node-server": "1.15.0",
     "@nell/aegis": "workspace:*",
     "@nell/agent": "workspace:*",
     "@nell/channels": "workspace:*",
     "@nell/db": "workspace:*",
     "@nell/durable": "workspace:*",
-    "@nell/shared": "workspace:*"
+    "@nell/license": "workspace:*",
+    "@nell/shared": "workspace:*",
+    "hono": "4.10.2",
+    "pg": "8.23.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "24.13.3"
+    "@types/node": "24.13.3",
+    "@types/pg": "8.23.1",
+    "tsx": "4.20.3",
+    "vitest": "4.1.10"
   }
 }

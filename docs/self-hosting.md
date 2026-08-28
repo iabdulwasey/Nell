@@ -36,5 +36,29 @@ service for other people**. They are present in the source but stay disabled
 without a valid license key. See
 [`adr/0002-licensing-open-core.md`](adr/0002-licensing-open-core.md).
 
-> This scaffold does not yet ship a working `docker compose` stack — that lands
-> in Phase 0. The commands above describe the intended one-command experience.
+## What runs today
+
+`docker compose up` starts Postgres and the Nell core service. The core exposes:
+
+- `GET /healthz` — liveness (never touches the database)
+- `GET /readyz` — readiness, plus which capabilities are configured and whether
+  any commercial features are licensed
+
+The dashboard and browser sidecar are commented out in the compose file and get
+enabled as they land (see [`roadmap.md`](roadmap.md)).
+
+## The database role matters
+
+Compose provisions a `nell_app` role that is `NOSUPERUSER NOBYPASSRLS`, and the
+service connects as that role. **This is not optional.** PostgreSQL superusers
+ignore row-level security entirely, so connecting as the database owner would
+silently disable tenant isolation. Nell refuses to boot in that configuration
+and tells you why:
+
+```
+Error: The database role can bypass row-level security (superuser or BYPASSRLS).
+Tenant isolation would be silently disabled.
+```
+
+If you are running Postgres yourself rather than through compose, create the
+application role the same way — see `appRoleSql()` in `packages/db`.

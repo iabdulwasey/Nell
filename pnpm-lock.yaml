@@ -29,6 +29,9 @@ importers:
 
   apps/core:
     dependencies:
+      '@hono/node-server':
+        specifier: 1.15.0
+        version: 1.15.0(hono@4.10.2)
       '@nell/aegis':
         specifier: workspace:*
         version: link:../../packages/aegis
@@ -44,13 +47,34 @@ importers:
       '@nell/durable':
         specifier: workspace:*
         version: link:../../packages/durable
+      '@nell/license':
+        specifier: workspace:*
+        version: link:../../packages/license
       '@nell/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      hono:
+        specifier: 4.10.2
+        version: 4.10.2
+      pg:
+        specifier: 8.23.0
+        version: 8.23.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      tsx:
+        specifier: 4.20.3
+        version: 4.20.3
+      vitest:
+        specifier: 4.1.10
+        version: 4.1.10(@types/node@24.13.3)(vite@8.2.2)
 
   apps/web:
     dependencies:
@@ -633,6 +657,15 @@ packages:
     requiresBuild: true
     dev: true
     optional: true
+
+  /@hono/node-server@1.15.0(hono@4.10.2):
+    resolution: {integrity: sha512-MjmK4l5N4dQpZ9OSWN0tCj7ejuc7WvuWMzSKtc89bnknJykAeHxzRigXBTYZk85H6Awrii6RM59iUiUluApu2A==}
+    engines: {node: '>=18.14.1'}
+    peerDependencies:
+      hono: ^4
+    dependencies:
+      hono: 4.10.2
+    dev: false
 
   /@jridgewell/sourcemap-codec@1.6.0:
     resolution: {integrity: sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==}
@@ -1465,6 +1498,11 @@ packages:
     dependencies:
       resolve-pkg-maps: 1.0.0
     dev: true
+
+  /hono@4.10.2:
+    resolution: {integrity: sha512-p6fyzl+mQo6uhESLxbF5WlBOAJMDh36PljwlKtP5V1v09NxlqGru3ShK+4wKhSuhuYf8qxMmrivHOa/M7q0sMg==}
+    engines: {node: '>=16.9.0'}
+    dev: false
 
   /is-what@4.1.16:
     resolution: {integrity: sha512-ZhMwEosbFJkA0YhFnNDgTM4ZxDRsS6HqTo7qsZM08fehyRYIYa0yHu5R6mgo1n/8MgaPBXiPimPD77baVFYg+A==}
