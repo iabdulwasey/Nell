@@ -24,3 +24,5 @@ export type {
   BrowserSession,
   CreateSessionOptions,
 } from "./provider.js";
+
+export { LocalBrowserProvider, type LocalBrowserOptions } from "./adapters/local.js";

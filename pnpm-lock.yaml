@@ -220,6 +220,9 @@ importers:
       '@types/node':
         specifier: 24.13.3
         version: 24.13.3
+      playwright:
+        specifier: 1.56.0
+        version: 1.56.0
       vitest:
         specifier: 4.1.10
         version: 4.1.10(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(tsx@4.20.3)(yaml@2.9.0))
@@ -1142,6 +1145,11 @@ packages:
       picomatch:
         optional: true
 
+  fsevents@2.3.2:
+    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
+    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+    os: [darwin]
+
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
@@ -1316,6 +1324,11 @@ packages:
 
   playwright-core@1.56.0:
     resolution: {integrity: sha512-1SXl7pMfemAMSDn5rkPeZljxOCYAmQnYLBTExuh6E8USHXGSX3dx6lYZN/xPpTz1vimXmPA9CDnILvmJaB8aSQ==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  playwright@1.56.0:
+    resolution: {integrity: sha512-X5Q1b8lOdWIE4KAoHpW3SE8HvUB+ZZsUoN64ZhjnN8dOb1UpujxBtENGiZFE+9F/yhzJwYa+ca3u43FeLbboHA==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -1927,6 +1940,9 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.7
 
+  fsevents@2.3.2:
+    optional: true
+
   fsevents@2.3.3:
     optional: true
 
@@ -2083,6 +2099,12 @@ snapshots:
   picomatch@4.0.7: {}
 
   playwright-core@1.56.0: {}
+
+  playwright@1.56.0:
+    dependencies:
+      playwright-core: 1.56.0
+    optionalDependencies:
+      fsevents: 2.3.2
 
   postcss@8.5.26:
     dependencies:

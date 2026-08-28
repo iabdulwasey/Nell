@@ -18,6 +18,7 @@
   },
   "devDependencies": {
     "@types/node": "24.13.3",
+    "playwright": "1.56.0",
     "vitest": "4.1.10"
   }
 }
