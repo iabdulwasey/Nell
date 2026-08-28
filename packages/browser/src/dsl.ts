@@ -91,6 +91,63 @@ export const actionSchema = z.discriminatedUnion("action", [
     fields: z.array(z.string().min(1).max(100)).min(1).max(30),
   }),
   z.object({ action: z.literal("screenshot"), fullPage: z.boolean().default(false) }),
+
+  /**
+   * Attach a file to a file input — CVs, ID documents, receipts. Files come from
+   * the user's own uploads by reference; a worker cannot name an arbitrary path
+   * on the host, which would otherwise be a filesystem read primitive.
+   */
+  z.object({
+    action: z.literal("upload"),
+    target: targetSchema,
+    /** Reference to a file the user provided, never a filesystem path. */
+    fileRef: z.string().min(1).max(200),
+  }),
+
+  /** Reveal menus and tooltips that only appear on hover. */
+  z.object({ action: z.literal("hover"), target: targetSchema }),
+
+  /** Drag one element onto another: sliders, reordering, some date pickers. */
+  z.object({
+    action: z.literal("drag"),
+    from: targetSchema,
+    to: targetSchema,
+  }),
+
+  /**
+   * Press a key. Bounded to a known set: some flows are only reachable by
+   * keyboard (Enter to submit, Escape to dismiss, Tab through a widget).
+   */
+  z.object({
+    action: z.literal("press"),
+    key: z.enum([
+      "Enter",
+      "Escape",
+      "Tab",
+      "Backspace",
+      "Delete",
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "PageDown",
+      "PageUp",
+      "Home",
+      "End",
+    ]),
+  }),
+
+  /**
+   * Click at a coordinate. The escape hatch for canvas, maps and image-based
+   * widgets that expose nothing to the accessibility tree. Deliberately last
+   * and deliberately rare: coordinates break when layout shifts, which is why
+   * they are not the primary way to act.
+   */
+  z.object({
+    action: z.literal("click-at"),
+    x: z.number().int().nonnegative().max(10_000),
+    y: z.number().int().nonnegative().max(10_000),
+  }),
 ]);
 
 export type BrowserAction = z.infer<typeof actionSchema>;
@@ -104,7 +161,16 @@ export const actionBatchSchema = z.array(actionSchema).min(1).max(20);
  */
 export function operationClassOf(
   action: BrowserAction
-): "navigate" | "click" | "type" | "select" | "scroll" | "wait" | "read-text" | "screenshot" {
+):
+  | "navigate"
+  | "click"
+  | "type"
+  | "select"
+  | "scroll"
+  | "wait"
+  | "read-text"
+  | "screenshot"
+  | "upload" {
   switch (action.action) {
     case "goto":
     case "back":
@@ -123,6 +189,17 @@ export function operationClassOf(
       return "read-text";
     case "screenshot":
       return "screenshot";
+    // Attaching a file moves data OUT of the machine, so it is classified
+    // separately: the taint machine must be able to refuse it on a session that
+    // is holding a credential.
+    case "upload":
+      return "upload";
+    case "hover":
+    case "drag":
+    case "click-at":
+      return "click";
+    case "press":
+      return "type";
   }
 }
 

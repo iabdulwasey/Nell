@@ -7,7 +7,9 @@
  * network flakiness, no rate limits.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { accessScopeForUser } from "@nell/shared";
@@ -42,6 +44,24 @@ const PAGE = `<!doctype html>
   <button id="go">Continue</button>
   <a href="/next">Next page</a>
   <div data-testid="marker">marker-value</div>
+  <input id="cv" type="file" aria-label="Attach CV" />
+  <div id="uploaded"></div>
+  <div id="hovertarget" aria-label="Hover me">idle</div>
+  <div id="hoverstate"></div>
+  <input id="keyfield" aria-label="Key field" />
+  <div id="keystate"></div>
+  <script>
+    document.getElementById('cv').addEventListener('change', (e) => {
+      document.getElementById('uploaded').textContent =
+        Array.from(e.target.files).map(f => f.name + ':' + f.size).join(',');
+    });
+    document.getElementById('hovertarget').addEventListener('mouseenter', () => {
+      document.getElementById('hoverstate').textContent = 'hovered';
+    });
+    document.getElementById('keyfield').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('keystate').textContent = 'entered';
+    });
+  </script>
 </body></html>`;
 
 const NEXT = `<!doctype html><html><body><h1>Second Page</h1></body></html>`;
@@ -49,6 +69,7 @@ const NEXT = `<!doctype html><html><body><h1>Second Page</h1></body></html>`;
 let server: Server;
 let origin: string;
 let provider: LocalBrowserProvider;
+let cvPath: string;
 
 const scope = accessScopeForUser("user-browser-test");
 const otherScope = accessScopeForUser("user-someone-else");
@@ -62,10 +83,16 @@ beforeAll(async () => {
     server.listen(0, "127.0.0.1", resolve);
   });
   origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
-  provider = new LocalBrowserProvider({ headless: true });
+  cvPath = join(tmpdir(), `nell-cv-${String(process.pid)}.txt`);
+  writeFileSync(cvPath, "Ada Lovelace — CV");
+  provider = new LocalBrowserProvider({
+    headless: true,
+    files: { resolve: (_scope, ref) => (ref === "cv-1" ? cvPath : undefined) },
+  });
 }, 60_000);
 
 afterAll(async () => {
+  rmSync(cvPath, { force: true });
   await provider.shutdown();
   await new Promise<void>((resolve) => {
     server.close(() => {
@@ -157,6 +184,75 @@ describeBrowser("LocalBrowserProvider", () => {
     await expect(provider.currentOrigin(scope, "local-does-not-exist")).rejects.toThrow(
       /not found/iu
     );
+  }, 60_000);
+
+  // These five actions were declared in the DSL but unhandled by the executor:
+  // they silently no-opped and reported success. An agent would believe a CV
+  // was attached when nothing had happened.
+  it("actually attaches a file rather than silently no-opping", async () => {
+    const provider = new LocalBrowserProvider({
+      headless: true,
+      files: {
+        resolve: (_scope, ref) => (ref === "cv-1" ? cvPath : undefined),
+      },
+    });
+    const session = await provider.createSession(scope, { startUrl: origin });
+
+    await provider.perform(scope, session.id, [
+      { action: "upload", target: { by: "css", selector: "#cv" }, fileRef: "cv-1" },
+    ]);
+    const result = await provider.perform(scope, session.id, [
+      { action: "extract", target: { by: "css", selector: "#uploaded" }, fields: ["uploaded"] },
+    ]);
+
+    // The page's own change handler saw a real FileList with the right name and
+    // byte count — no OS dialog was involved at any point.
+    expect(result.extracted?.text).toContain("nell-cv-");
+    expect(result.extracted?.text).toContain(":19");
+    await provider.shutdown();
+  }, 60_000);
+
+  it("refuses an unknown file reference instead of uploading nothing", async () => {
+    const session = await provider.createSession(scope, { startUrl: origin });
+    await expect(
+      provider.perform(scope, session.id, [
+        { action: "upload", target: { by: "css", selector: "#cv" }, fileRef: "nope" },
+      ])
+    ).rejects.toThrow(/file broker|unknown file/iu);
+    await provider.destroy(scope, session.id);
+  }, 60_000);
+
+  it("hovers, revealing content that only appears on hover", async () => {
+    const session = await provider.createSession(scope, { startUrl: origin });
+    await provider.perform(scope, session.id, [
+      { action: "hover", target: { by: "css", selector: "#hovertarget" } },
+    ]);
+    const result = await provider.perform(scope, session.id, [
+      { action: "extract", target: { by: "css", selector: "#hoverstate" }, fields: ["s"] },
+    ]);
+    expect(result.extracted?.text).toBe("hovered");
+    await provider.destroy(scope, session.id);
+  }, 60_000);
+
+  it("presses a key, reaching flows only available from the keyboard", async () => {
+    const session = await provider.createSession(scope, { startUrl: origin });
+    await provider.perform(scope, session.id, [
+      { action: "click", target: { by: "css", selector: "#keyfield" } },
+      { action: "press", key: "Enter" },
+    ]);
+    const result = await provider.perform(scope, session.id, [
+      { action: "extract", target: { by: "css", selector: "#keystate" }, fields: ["s"] },
+    ]);
+    expect(result.extracted?.text).toBe("entered");
+    await provider.destroy(scope, session.id);
+  }, 60_000);
+
+  it("clicks at a coordinate for canvas-like content", async () => {
+    const session = await provider.createSession(scope, { startUrl: origin });
+    // Should not throw; coordinate clicking is the escape hatch for content
+    // with no accessible structure.
+    await provider.perform(scope, session.id, [{ action: "click-at", x: 5, y: 5 }]);
+    await provider.destroy(scope, session.id);
   }, 60_000);
 
   it("isolates sessions from each other", async () => {

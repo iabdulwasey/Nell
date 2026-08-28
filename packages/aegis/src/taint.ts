@@ -24,7 +24,8 @@ export type BrowserOperation =
   | "read-value"
   | "read-clipboard"
   | "screenshot"
-  | "download";
+  | "download"
+  | "upload";
 
 export interface TaintState {
   readonly tainted: boolean;
@@ -84,6 +85,13 @@ export function authorizeOperation(
       return {
         allowed: false,
         reason: "Downloads are blocked after a credential fill.",
+      };
+    case "upload":
+      // Attaching a file while a credential is on the page is a way to move
+      // data off the machine under cover of a legitimate action.
+      return {
+        allowed: false,
+        reason: "File uploads are blocked after a credential fill.",
       };
     case "read-text":
     case "screenshot":

@@ -26,3 +26,23 @@ export type {
 } from "./provider.js";
 
 export { LocalBrowserProvider, type LocalBrowserOptions } from "./adapters/local.js";
+
+export {
+  buildSnapshot,
+  choosePerception,
+  estimateTokens,
+  isInteractive,
+  isWorthShowing,
+  MAX_NODES,
+  MAX_TEXT_CHARS,
+  renderSnapshot,
+  SCREENSHOT_TOKENS,
+  snapshotNodeSchema,
+  VISION_AFTER_FAILURES,
+  type BuildSnapshotInput,
+  type PageSnapshot,
+  type PerceptionDecision,
+  type PerceptionInput,
+  type SnapshotNode,
+  type VisionReason,
+} from "./perception.js";

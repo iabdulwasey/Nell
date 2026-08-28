@@ -37,16 +37,28 @@ export interface LocalBrowserOptions {
   readonly headless?: boolean;
   /** Where persistent per-merchant profiles are stored. */
   readonly profileDir?: string;
+  /**
+   * Resolves an opaque file reference to a path inside the session's upload
+   * directory. Workers name references, never filesystem paths — otherwise
+   * `upload` would be an arbitrary-file-read primitive.
+   */
+  readonly files?: FileResolver;
+}
+
+export interface FileResolver {
+  resolve(scope: AccessScope, fileRef: string): string | undefined;
 }
 
 export class LocalBrowserProvider implements BrowserProvider {
   #browser: Browser | undefined;
   readonly #sessions = new Map<string, LiveSession>();
   readonly #options: LocalBrowserOptions;
+  readonly #files: FileResolver | undefined;
   #counter = 0;
 
   constructor(options: LocalBrowserOptions = {}) {
     this.#options = options;
+    this.#files = options.files;
   }
 
   async #ensureBrowser(): Promise<Browser> {
@@ -140,6 +152,37 @@ export class LocalBrowserProvider implements BrowserProvider {
           const buffer = await page.screenshot({ fullPage: action.fullPage });
           screenshot = buffer.toString("base64");
           break;
+        }
+        case "upload": {
+          // Writes the FileList onto the element and fires `change`. No OS
+          // dialog is ever summoned, which is why this is the reliable path —
+          // a coordinate-driven native picker cannot be dismissed
+          // programmatically.
+          const path = this.#files?.resolve(scope, action.fileRef);
+          if (!path) {
+            throw new Error("No file broker configured, or unknown file reference.");
+          }
+          await locate(page, action.target).setInputFiles(path);
+          break;
+        }
+        case "hover":
+          await locate(page, action.target).hover();
+          break;
+        case "drag":
+          await locate(page, action.from).dragTo(locate(page, action.to));
+          break;
+        case "press":
+          await page.keyboard.press(action.key);
+          break;
+        case "click-at":
+          await page.mouse.click(action.x, action.y);
+          break;
+        default: {
+          // Exhaustiveness guard. Without this a newly declared action silently
+          // no-ops and reports success — the agent would believe a file was
+          // attached when nothing happened.
+          const unhandled: never = action;
+          throw new Error(`Unhandled browser action: ${JSON.stringify(unhandled)}`);
         }
       }
     }
