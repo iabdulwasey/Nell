@@ -89,3 +89,18 @@ export {
   type MemoryExport,
   type ParsedFact,
 } from "./export.js";
+
+export {
+  deletionScopeSchema,
+  isRebuildable,
+  issueReceipt,
+  NEVER_DELETED,
+  plan,
+  receiptDigest,
+  SCOPE_CATEGORIES,
+  verifyReceipt,
+  type DeletedCategory,
+  type DeletionReceipt,
+  type DeletionRequest,
+  type DeletionScope,
+} from "./deletion.js";
