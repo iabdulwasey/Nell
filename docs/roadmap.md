@@ -10,19 +10,39 @@ drops into the right shape.
 
 ## Phase 0 — Trust core
 
-The security foundation, built before any user-facing capability:
+The security foundation, built before any user-facing capability.
 
-- DBOS crash-resume spike (gates the engine choice)
-- DB schema + row-level security
-- Auth (international OTP, passkeys, recovery)
-- Vault: AES-256-GCM envelope encryption + rotation + server-side origin
-  allowlists
-- `BrowserProvider` (Kernel + local Chromium) with per-workspace ownership and
-  persistent profiles
-- Typed browser DSL + taint machine
-- Policy engine v1 (spend gate, audit writer, rate limits)
-- ModelRouter + metering
-- `docker compose up` boots everything; eval harness in place
+**Done** (119 tests; all packages typecheck; zero lint errors):
+
+- ✅ **DBOS crash-resume spike** — passed on real PostgreSQL. A workflow
+  SIGKILLed mid-step resumed from its checkpoint with the side-effecting step
+  running exactly once. The engine choice is validated, not assumed.
+- ✅ **DB schema + row-level security** — verified on PostgreSQL 17: scoped
+  reads see one workspace, unscoped reads see nothing, cross-tenant writes are
+  rejected. The service refuses to boot if its role can bypass RLS.
+- ✅ **Vault** — AES-256-GCM, per-item AAD binding, key-id wire format for live
+  rotation, `Secret<T>` that cannot be logged, structured item schemas (CVC
+  never stored).
+- ✅ **Typed browser DSL + taint machine** — a closed action vocabulary with no
+  code-execution escape hatch; value reads blocked after a credential fill.
+- ✅ **Policy engine** — spend gate with hash-bound single-use approvals, origin
+  allowlist, provenance gate.
+- ✅ **Audit** — append-only hash chain that detects edits, deletions and
+  reordering.
+- ✅ **ModelRouter + metering** — three tiers with bounded escalation and a
+  per-workspace circuit breaker that refuses a call before making it.
+- ✅ **Eval harness** — anti-cheat scoring plus adversarial refusal scenarios.
+- ✅ **International phone identity** — 20 regions; refuses to guess rather than
+  defaulting to +1.
+- ✅ **`docker compose up`** — Postgres plus a bootable core service with
+  liveness/readiness endpoints, running as a restricted database role.
+
+**Remaining:**
+
+- `BrowserProvider` adapter implementations (cloud service + local Chromium).
+  The port and DSL exist; the adapters need vendor credentials to build against.
+- Full auth wiring (OTP delivery, passkeys, recovery codes) on top of the phone
+  identity layer.
 
 ## v1 — The magic demo
 
