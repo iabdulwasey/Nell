@@ -11,6 +11,7 @@
  */
 
 import type { AccessScope } from "@nell/shared";
+import type { ComputerAction, CoordinateSpace } from "./computer.js";
 import type { BrowserAction } from "./dsl.js";
 
 export interface BrowserSession {
@@ -39,6 +40,8 @@ export interface ActionResult {
   readonly extracted?: Record<string, string>;
   /** Base64 PNG, when the batch contained a screenshot. */
   readonly screenshot?: string;
+  /** Where the pointer ended up, in viewport space. */
+  readonly cursor?: { readonly x: number; readonly y: number };
 }
 
 export interface BrowserProvider {
@@ -50,6 +53,24 @@ export interface BrowserProvider {
     sessionId: string,
     actions: readonly BrowserAction[]
   ): Promise<ActionResult>;
+
+  /**
+   * Execute computer-use actions: pixels, not refs. A co-equal way to drive the
+   * same session, not a fallback — a worker may interleave the two freely
+   * within one task, and both meet the same policy chokepoint above this layer.
+   */
+  performComputer(
+    scope: AccessScope,
+    sessionId: string,
+    actions: readonly ComputerAction[]
+  ): Promise<ActionResult>;
+
+  /**
+   * How the model's screenshot relates to the real screen. Callers need this to
+   * tell a model what resolution it is looking at; getting it wrong makes every
+   * click land short.
+   */
+  coordinateSpace(): CoordinateSpace;
 
   /**
    * The browser's ACTUAL current origin, read from the live session. The origin

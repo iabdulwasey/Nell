@@ -102,17 +102,27 @@ describe("rendering", () => {
   });
 });
 
-describe("choosing how to look", () => {
+describe("choosing which sense to lead with", () => {
   const usable = snapshotOf([node({ role: "button", name: "Continue" })]);
 
-  // The default must be the cheap path, or the cost model collapses.
-  it("uses the snapshot when the page is drivable", () => {
-    expect(choosePerception({ snapshot: usable, failureCount: 0 })).toEqual({
-      mode: "snapshot",
-    });
+  // The gate is gone: an earlier design made vision unreachable until the
+  // structured path had visibly failed twice.
+  it("never withholds a sense — the other is always available", () => {
+    for (const input of [
+      { snapshot: usable, failureCount: 0 },
+      { snapshot: usable, failureCount: 0, visualTask: true },
+      { failureCount: 0 },
+    ]) {
+      const decision = choosePerception(input);
+      expect(decision.alsoAvailable).not.toBe(decision.mode);
+    }
   });
 
-  it("escalates when nothing on the page can be acted on", () => {
+  it("leads with pixels when there is no snapshot at all", () => {
+    expect(choosePerception({ failureCount: 0 }).mode).toBe("vision");
+  });
+
+  it("leads with pixels when nothing on the page can be acted on", () => {
     const inert = snapshotOf([node({ role: "heading", name: "Loading" })]);
     expect(choosePerception({ snapshot: inert, failureCount: 0 })).toMatchObject({
       mode: "vision",
@@ -120,23 +130,41 @@ describe("choosing how to look", () => {
     });
   });
 
-  // Evidence, not preference: the structured path must actually have failed.
-  it("escalates only after repeated failure", () => {
-    expect(
-      choosePerception({ snapshot: usable, failureCount: VISION_AFTER_FAILURES - 1 }).mode
-    ).toBe("snapshot");
+  // Refs are faster and fail loudly, so a clean page is the case for them.
+  it("leads with refs on a cleanly drivable page", () => {
+    expect(choosePerception({ snapshot: usable, failureCount: 0 })).toMatchObject({
+      mode: "snapshot",
+      reason: "cleanly-drivable",
+    });
+  });
+
+  // A lost race is a lost task however good the reasoning was.
+  it("leads with refs when the task is racing something", () => {
+    expect(choosePerception({ snapshot: usable, failureCount: 0, timeCritical: true }).reason).toBe(
+      "time-critical"
+    );
+  });
+
+  it("does not claim a truncated page is cleanly drivable", () => {
+    const partial = snapshotOf(
+      Array.from({ length: MAX_NODES + 5 }, (_, i) => node({ ref: `e${String(i)}` }))
+    );
+    expect(choosePerception({ snapshot: partial, failureCount: 0 }).mode).toBe("vision");
+  });
+
+  it("switches to pixels once the structured path has failed repeatedly", () => {
     expect(
       choosePerception({ snapshot: usable, failureCount: VISION_AFTER_FAILURES })
     ).toMatchObject({ mode: "vision", reason: "repeated-failure" });
   });
 
-  it("escalates for genuinely visual work", () => {
+  it("leads with pixels for genuinely visual work", () => {
     expect(choosePerception({ snapshot: usable, failureCount: 0, visualTask: true }).reason).toBe(
       "visual-task"
     );
   });
 
-  it("escalates for canvas or image content with no structure", () => {
+  it("leads with pixels for canvas or image content with no structure", () => {
     expect(
       choosePerception({ snapshot: usable, failureCount: 0, opaqueContent: true }).reason
     ).toBe("canvas-or-image");
@@ -148,7 +176,7 @@ describe("choosing how to look", () => {
         snapshot: usable,
         failureCount: 0,
         explicitRequest: true,
-        visualTask: true,
+        timeCritical: true,
       }).reason
     ).toBe("explicit-request");
   });

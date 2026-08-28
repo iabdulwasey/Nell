@@ -1,23 +1,31 @@
 /**
- * Page perception: how a worker sees a page.
+ * Page perception: the second way a worker sees.
  *
- * The default is a filtered accessibility snapshot; pixels are an escalation.
- * That ordering is chosen for correctness and latency, not primarily for cost:
+ * A worker has two senses and picks between them freely. Pixels (see
+ * `computer.ts`) are the general one: a screenshot works on every page ever
+ * built, including the many that expose nothing useful to assistive technology.
+ * This file provides the other — a filtered accessibility snapshot with stable
+ * refs — which is narrower but, where it applies, strictly better:
  *
  * - **Failure mode.** A version-stamped ref that goes stale raises an error. A
  *   stale coordinate clicks whatever moved into that spot — silently, and on a
  *   checkout page that is a wrong purchase rather than a caught mistake.
- * - **Latency.** Measured DOM-first agents finish a task in ~68s against
- *   ~285-330s for pixel-driven ones. For a product whose promise is "text it
- *   like a sharp friend", four minutes of extra silence is a different product.
- * - **Accuracy.** The gap is now narrow (ComponentBench: 83.8% pixel vs 81.5%
- *   accessibility-tree on the same model), so accuracy alone does not decide
- *   this. Safety and latency do.
+ * - **Latency.** Measured DOM-driven agents finish a task in ~68s against
+ *   ~285-330s for pixel-driven ones. That gap is invisible on a leisurely
+ *   booking and decisive on a ticket drop, which is the case this sense exists
+ *   for.
+ * - **Accuracy.** Near parity (ComponentBench: 83.8% pixel vs 81.5%
+ *   accessibility-tree on the same model), so accuracy does not pick a winner.
+ *   Speed and failure mode do, and only on pages clean enough to have refs.
  *
  * On cost, an earlier and widely-repeated 45x figure compared an *unbatched*
  * pixel loop against a *batched* structured one, and does not reproduce against
  * current tooling. Batching is the larger lever; perception mode is a further
  * ~2-3x on tokens. Worth having, not worth deciding the architecture on.
+ *
+ * Neither sense gates the other. Whichever the worker uses, the action it
+ * produces meets the same policy chokepoint — seeing differently never means
+ * being allowed to do more.
  *
  * The snapshot is deliberately lossy. Raw HTML is worse than a screenshot:
  * enormous, mostly irrelevant, and full of markup that invites reasoning about
@@ -132,21 +140,44 @@ export function renderSnapshot(snapshot: PageSnapshot): string {
   return `${header}\n\n${body}${text}${note}`;
 }
 
-/** Why a worker escalated from a snapshot to a screenshot. */
-export type VisionReason =
+/**
+ * Why a particular sense was recommended.
+ *
+ * Both directions are represented, because neither sense is the exception any
+ * more — a recommendation of `snapshot` is as much a decision as a
+ * recommendation of `vision`, and a worker reviewing its own trace deserves to
+ * know why it looked the way it did in both cases.
+ */
+export type PerceptionReason =
+  /* → vision */
   | "no-interactive-nodes"
   | "repeated-failure"
   | "visual-task"
   | "canvas-or-image"
-  | "explicit-request";
+  | "explicit-request"
+  | "general-purpose"
+  /* → snapshot */
+  | "time-critical"
+  | "cleanly-drivable";
 
 export interface PerceptionDecision {
+  /** The sense to lead with. */
   readonly mode: "snapshot" | "vision";
-  readonly reason?: VisionReason;
+  readonly reason: PerceptionReason;
+  /**
+   * The sense NOT chosen — always populated, because it is always available.
+   * This field exists to make the contract unmissable at the call site: this
+   * function recommends, it does not permit.
+   */
+  readonly alsoAvailable: "snapshot" | "vision";
 }
 
 export interface PerceptionInput {
-  readonly snapshot: PageSnapshot;
+  /**
+   * Optional. A worker may act on pixels without ever building a snapshot, so
+   * requiring one here would have quietly reimposed the gate this function had.
+   */
+  readonly snapshot?: PageSnapshot;
   /** Consecutive failed attempts on this page. */
   readonly failureCount: number;
   /** The task inherently needs to see (a seat map, a chart, a photo). */
@@ -154,33 +185,64 @@ export interface PerceptionInput {
   /** The page's content is a canvas or image with no accessible structure. */
   readonly opaqueContent?: boolean;
   readonly explicitRequest?: boolean;
+  /**
+   * The task is racing something — a ticket drop, a countdown, a checkout hold.
+   * Structured steps run several times faster, and a lost race is a lost task
+   * however good the reasoning was.
+   */
+  readonly timeCritical?: boolean;
 }
 
-/** Failures on one page before falling back to vision. */
+/** Structured failures on one page before pixels become the better lead. */
 export const VISION_AFTER_FAILURES = 2;
 
 /**
- * Choose how to look at the page.
+ * Recommend which sense to lead with.
  *
- * Escalation is bounded and evidence-based: a page that exposes no way to act,
- * or one where the structured approach has demonstrably failed twice, earns a
- * screenshot. Preference alone does not.
+ * **This is advice, not permission.** Both senses are available at every step and
+ * the worker may take either; an earlier design made vision unreachable until
+ * the structured path had visibly failed twice, which meant burning two failures
+ * before the agent was allowed to look at the screen. That gate is gone.
+ *
+ * The default is vision, because it is the general sense — it works on every
+ * page ever built, including the ones that expose nothing to assistive tech.
+ * Structured is recommended only where it is genuinely the better tool: a page
+ * that is cleanly drivable, where refs are both faster (~68s/task against
+ * ~285-330s measured for pixel loops) and safer (a stale ref raises; a stale
+ * coordinate clicks whatever moved into that spot).
  */
 export function choosePerception(input: PerceptionInput): PerceptionDecision {
-  if (input.explicitRequest) return { mode: "vision", reason: "explicit-request" };
-  if (input.visualTask) return { mode: "vision", reason: "visual-task" };
-  if (input.opaqueContent) return { mode: "vision", reason: "canvas-or-image" };
+  const vision = (reason: PerceptionReason): PerceptionDecision => ({
+    mode: "vision",
+    reason,
+    alsoAvailable: "snapshot",
+  });
+  const structured = (reason: PerceptionReason): PerceptionDecision => ({
+    mode: "snapshot",
+    reason,
+    alsoAvailable: "vision",
+  });
 
-  // A page with nothing actionable in its accessibility tree is one we cannot
-  // drive structurally, whatever the markup claims.
-  const actionable = input.snapshot.nodes.filter((node) => isInteractive(node.role));
-  if (actionable.length === 0) return { mode: "vision", reason: "no-interactive-nodes" };
+  if (input.explicitRequest) return vision("explicit-request");
+  if (input.visualTask) return vision("visual-task");
+  if (input.opaqueContent) return vision("canvas-or-image");
 
-  if (input.failureCount >= VISION_AFTER_FAILURES) {
-    return { mode: "vision", reason: "repeated-failure" };
-  }
+  // A page with nothing actionable in its accessibility tree cannot be driven
+  // structurally, whatever the markup claims.
+  const actionable = (input.snapshot?.nodes ?? []).filter((node) => isInteractive(node.role));
+  if (actionable.length === 0) return vision("no-interactive-nodes");
 
-  return { mode: "snapshot" };
+  if (input.failureCount >= VISION_AFTER_FAILURES) return vision("repeated-failure");
+
+  // Racing a drop is the case where the speed difference decides the outcome
+  // rather than merely the bill.
+  if (input.timeCritical) return structured("time-critical");
+
+  // A truncated page is one we are only seeing part of; leading with a
+  // screenshot at least shows what is actually on screen.
+  if (input.snapshot && !input.snapshot.truncated) return structured("cleanly-drivable");
+
+  return vision("general-purpose");
 }
 
 /**

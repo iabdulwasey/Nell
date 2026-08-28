@@ -72,3 +72,16 @@ export {
   type Intent,
   type WorkerResult,
 } from "./coordinator.js";
+
+export {
+  buildCatalog,
+  explainProblem,
+  optionsForTier,
+  providerSchema,
+  REFERENCE_CATALOG,
+  validateCatalog,
+  type CatalogEntry,
+  type CatalogProblem,
+  type CatalogSelection,
+  type Provider,
+} from "./catalog.js";

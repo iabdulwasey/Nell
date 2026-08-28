@@ -15,6 +15,7 @@ import type { AddressInfo } from "node:net";
 import { accessScopeForUser } from "@nell/shared";
 import { chromium } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { toDisplay, type Point } from "../computer.js";
 import { LocalBrowserProvider } from "./local.js";
 
 /**
@@ -66,6 +67,61 @@ const PAGE = `<!doctype html>
 
 const NEXT = `<!doctype html><html><body><h1>Second Page</h1></body></html>`;
 
+/**
+ * A page built for pixel-driving: every target sits at an exact, known position
+ * so a click can be aimed at a coordinate and verified to have landed there.
+ */
+const COMPUTER_PAGE = `<!doctype html>
+<html><body style="margin:0">
+  <div id="target" style="position:absolute;left:200px;top:200px;width:100px;height:100px;background:#ccc"></div>
+  <div id="hit">none</div>
+  <div id="menu">none</div>
+  <input id="text" style="position:absolute;left:200px;top:400px;width:300px" />
+  <div id="pane" style="position:absolute;left:600px;top:200px;width:200px;height:150px;overflow:auto">
+    <div style="height:2000px">tall</div>
+  </div>
+  <div id="panescroll">0</div>
+  <input id="slider" type="range" min="0" max="100" value="0"
+         style="position:absolute;left:200px;top:600px;width:400px" />
+  <div id="held">up</div>
+  <div id="textvalue"></div>
+  <div id="slidervalue">0</div>
+  <div id="keychord">none</div>
+  <script>
+    document.getElementById('text').addEventListener('input', function (e) {
+      document.getElementById('textvalue').textContent = e.target.value;
+    });
+    document.getElementById('text').addEventListener('keydown', function (e) {
+      if (e.key.length === 1 && (e.ctrlKey || e.metaKey)) {
+        document.getElementById('keychord').textContent =
+          (e.ctrlKey ? 'ctrl+' : 'meta+') + e.key;
+      }
+    });
+    document.getElementById('slider').addEventListener('input', function (e) {
+      document.getElementById('slidervalue').textContent = e.target.value;
+    });
+    var t = document.getElementById('target');
+    t.addEventListener('click', function (e) {
+      document.getElementById('hit').textContent =
+        e.clientX + ',' + e.clientY + ',' + e.detail +
+        (e.shiftKey ? ',shift' : '') + (e.ctrlKey ? ',ctrl' : '');
+    });
+    t.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      document.getElementById('menu').textContent = 'context';
+    });
+    t.addEventListener('mousedown', function () {
+      document.getElementById('held').textContent = 'down';
+    });
+    t.addEventListener('mouseup', function () {
+      document.getElementById('held').textContent = 'released';
+    });
+    document.getElementById('pane').addEventListener('scroll', function (e) {
+      document.getElementById('panescroll').textContent = String(Math.round(e.target.scrollTop));
+    });
+  </script>
+</body></html>`;
+
 let server: Server;
 let origin: string;
 let provider: LocalBrowserProvider;
@@ -77,7 +133,9 @@ const otherScope = accessScopeForUser("user-someone-else");
 beforeAll(async () => {
   server = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/html" });
-    res.end(req.url === "/next" ? NEXT : PAGE);
+    if (req.url === "/next") return void res.end(NEXT);
+    if (req.url === "/computer") return void res.end(COMPUTER_PAGE);
+    res.end(PAGE);
   });
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
@@ -274,5 +332,228 @@ describeBrowser("LocalBrowserProvider", () => {
 
     await provider.destroy(scope, a.id);
     await provider.destroy(scope, b.id);
+  }, 60_000);
+});
+
+/**
+ * Computer use against a real browser.
+ *
+ * The reason these exist rather than unit tests over the switch statement: an
+ * unimplemented action returns success and no-ops, and the agent then believes
+ * it clicked something it never touched. Only a real page can prove otherwise,
+ * so every action asserts on an observable change the page itself recorded.
+ */
+describeBrowser("computer use", () => {
+  /** A viewport point expressed the way a model looking at a screenshot would. */
+  function asModelSees(point: Point): Point {
+    return toDisplay(provider.coordinateSpace(), point);
+  }
+
+  async function computerSession(): Promise<string> {
+    const session = await provider.createSession(scope, { startUrl: `${origin}/computer` });
+    return session.id;
+  }
+
+  async function readText(sessionId: string, id: string): Promise<string> {
+    const result = await provider.perform(scope, sessionId, [
+      { action: "extract", target: { by: "css", selector: `#${id}` }, fields: ["text"] },
+    ]);
+    return result.extracted?.["text"] ?? "";
+  }
+
+  // The headline claim: a click aimed at a coordinate lands at that coordinate.
+  it("clicks where the model aimed, after scaling", async () => {
+    const id = await computerSession();
+    await provider.performComputer(scope, id, [
+      { action: "left_click", coordinate: asModelSees({ x: 250, y: 250 }), modifiers: [] },
+    ]);
+
+    // Within a pixel: the model's space is coarser than the viewport, so the
+    // round-trip cannot be exact — but it must land inside the 100x100 target.
+    const [x, y, detail] = (await readText(id, "hit")).split(",");
+    expect(Number(x)).toBeGreaterThanOrEqual(200);
+    expect(Number(x)).toBeLessThan(300);
+    expect(Number(y)).toBeGreaterThanOrEqual(200);
+    expect(Number(y)).toBeLessThan(300);
+    expect(detail).toBe("1");
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("holds modifiers during a click and releases them after", async () => {
+    const id = await computerSession();
+    const at = asModelSees({ x: 250, y: 250 });
+    await provider.performComputer(scope, id, [
+      { action: "left_click", coordinate: at, modifiers: ["Shift"] },
+    ]);
+    expect(await readText(id, "hit")).toContain("shift");
+
+    // A modifier left stuck down would silently corrupt every later keystroke.
+    await provider.performComputer(scope, id, [
+      { action: "left_click", coordinate: at, modifiers: [] },
+    ]);
+    expect(await readText(id, "hit")).not.toContain("shift");
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("distinguishes double and triple clicks", async () => {
+    const id = await computerSession();
+    const at = asModelSees({ x: 250, y: 250 });
+
+    await provider.performComputer(scope, id, [
+      { action: "double_click", coordinate: at, modifiers: [] },
+    ]);
+    expect((await readText(id, "hit")).split(",")[2]).toBe("2");
+
+    await provider.performComputer(scope, id, [
+      { action: "triple_click", coordinate: at, modifiers: [] },
+    ]);
+    expect((await readText(id, "hit")).split(",")[2]).toBe("3");
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("opens a context menu with a right click", async () => {
+    const id = await computerSession();
+    await provider.performComputer(scope, id, [
+      { action: "right_click", coordinate: asModelSees({ x: 250, y: 250 }), modifiers: [] },
+    ]);
+    expect(await readText(id, "menu")).toBe("context");
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  // The primitive a compound drag cannot express: a press that stays down.
+  it("holds the button down across separate actions", async () => {
+    const id = await computerSession();
+    const at = asModelSees({ x: 250, y: 250 });
+
+    await provider.performComputer(scope, id, [{ action: "left_mouse_down", coordinate: at }]);
+    expect(await readText(id, "held")).toBe("down");
+
+    await provider.performComputer(scope, id, [{ action: "left_mouse_up", coordinate: at }]);
+    expect(await readText(id, "held")).toBe("released");
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("drags a slider to a new value", async () => {
+    const id = await computerSession();
+    await provider.performComputer(scope, id, [
+      {
+        action: "left_click_drag",
+        start_coordinate: asModelSees({ x: 210, y: 610 }),
+        coordinate: asModelSees({ x: 500, y: 610 }),
+      },
+    ]);
+
+    expect(Number(await readText(id, "slidervalue"))).toBeGreaterThan(0);
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("follows a multi-point drag path", async () => {
+    const id = await computerSession();
+    await provider.performComputer(scope, id, [
+      {
+        action: "drag_path",
+        path: [
+          asModelSees({ x: 210, y: 610 }),
+          asModelSees({ x: 300, y: 605 }),
+          asModelSees({ x: 450, y: 610 }),
+        ],
+      },
+    ]);
+    expect(Number(await readText(id, "slidervalue"))).toBeGreaterThan(0);
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  // The reason scroll takes a coordinate: an inner pane does not move when the
+  // document does.
+  it("scrolls the container under the pointer, not the page", async () => {
+    const id = await computerSession();
+    await provider.performComputer(scope, id, [
+      {
+        action: "scroll",
+        coordinate: asModelSees({ x: 700, y: 270 }),
+        scroll_direction: "down",
+        scroll_amount: 3,
+      },
+    ]);
+    expect(Number(await readText(id, "panescroll"))).toBeGreaterThan(0);
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("types into whatever has focus", async () => {
+    const id = await computerSession();
+    await provider.performComputer(scope, id, [
+      { action: "left_click", coordinate: asModelSees({ x: 300, y: 410 }), modifiers: [] },
+      { action: "type", text: "Ada Lovelace" },
+    ]);
+
+    expect(await readText(id, "textvalue")).toBe("Ada Lovelace");
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("presses a key chord", async () => {
+    const id = await computerSession();
+    await provider.performComputer(scope, id, [
+      { action: "left_click", coordinate: asModelSees({ x: 300, y: 410 }), modifiers: [] },
+      { action: "key", keys: ["Control", "a"] },
+    ]);
+    // The page records the modifier alongside the key, so a chord that arrived
+    // as a bare keypress — the failure mode if the modifier were never held —
+    // records nothing.
+    expect(await readText(id, "keychord")).toBe("ctrl+a");
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("returns a screenshot at the resolution it declares", async () => {
+    const id = await computerSession();
+    const result = await provider.performComputer(scope, id, [{ action: "screenshot" }]);
+    expect(result.screenshot).toBeTruthy();
+
+    // A model told the screen is one size while shown another aims every click
+    // at the wrong place, so the declared size must match the captured image.
+    const png = Buffer.from(result.screenshot ?? "", "base64");
+    const width = png.readUInt32BE(16);
+    const height = png.readUInt32BE(20);
+    const space = provider.coordinateSpace();
+    expect(width).toBe(space.display.width);
+    expect(height).toBe(space.display.height);
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("reports where the pointer ended up", async () => {
+    const id = await computerSession();
+    const result = await provider.performComputer(scope, id, [
+      { action: "mouse_move", coordinate: asModelSees({ x: 250, y: 250 }) },
+    ]);
+    expect(result.cursor?.x).toBeGreaterThan(240);
+    expect(result.cursor?.y).toBeGreaterThan(240);
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("waits without failing", async () => {
+    const id = await computerSession();
+    await provider.performComputer(scope, id, [{ action: "wait", durationMs: 50 }]);
+    expect(await provider.currentOrigin(scope, id)).toBe(origin);
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  // Clamping would turn "the model is looking at a different screen" into a
+  // plausible-looking click on the edge of the page.
+  it("refuses a coordinate outside the screen it showed the model", async () => {
+    const id = await computerSession();
+    await expect(
+      provider.performComputer(scope, id, [
+        { action: "left_click", coordinate: { x: 9000, y: 10 }, modifiers: [] },
+      ])
+    ).rejects.toThrow(/outside/iu);
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  // Perception mode must never be a way around ownership.
+  it("refuses a session belonging to another workspace", async () => {
+    const id = await computerSession();
+    await expect(
+      provider.performComputer(otherScope, id, [{ action: "screenshot" }])
+    ).rejects.toThrow(/not found/iu);
+    await provider.destroy(scope, id);
   }, 60_000);
 });

@@ -18,6 +18,43 @@ export {
   type Target,
 } from "./dsl.js";
 
+export {
+  anthropicToolSpec,
+  assertOnScreen,
+  computerActionSchema,
+  fromAnthropicAction,
+  fromOpenAIAction,
+  genericToolSpec,
+  keyNameSchema,
+  KEY_NAMES,
+  MACHINE_VIEWPORT,
+  MODEL_DISPLAY,
+  modifierSchema,
+  openaiToolSpec,
+  operationClassOfComputerAction,
+  pointSchema,
+  projectAction,
+  toDisplay,
+  toViewport,
+  type ComputerAction,
+  type CoordinateSpace,
+  type DisplaySize,
+  type KeyName,
+  type Modifier,
+  type Point,
+} from "./computer.js";
+
+export {
+  IDLE_BEFORE_STANDBY_MS,
+  MachineRegistry,
+  type ActOutcome,
+  type DestroyReceipt,
+  type Machine,
+  type MachineHost,
+  type MachineState,
+  type RegistryOptions,
+} from "./machine.js";
+
 export type {
   ActionResult,
   BrowserProvider,
@@ -43,6 +80,6 @@ export {
   type PageSnapshot,
   type PerceptionDecision,
   type PerceptionInput,
+  type PerceptionReason,
   type SnapshotNode,
-  type VisionReason,
 } from "./perception.js";
