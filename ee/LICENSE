@@ -1,0 +1,47 @@
+The Nell Enterprise Edition (EE) License
+
+Copyright 2026 Abdul Wasey. All rights reserved.
+
+This directory ("ee/") and everything under it (the "EE Software") is commercial
+software. It is source-available for transparency and contribution, but it is
+NOT free software and is NOT covered by the Functional Source License that
+governs the rest of this repository.
+
+1. GRANT AND RESTRICTIONS
+
+   The EE Software may be used in production only if you have agreed to, and are
+   in compliance with, a valid Nell commercial subscription for the applicable
+   scope (the "Nell Subscription Terms"), and only for so long as that
+   subscription remains active.
+
+   Notwithstanding the foregoing, you may copy and modify the EE Software for
+   development and testing purposes without a subscription, so that the code
+   remains reviewable and contributable.
+
+   Except as expressly permitted above, it is forbidden to copy, merge, publish,
+   distribute, sublicense, sell, or otherwise make available the EE Software or
+   any derivative of it.
+
+2. ANTI-CIRCUMVENTION
+
+   You may not, and may not enable others to, circumvent, disable, remove, or
+   otherwise avoid the license-key verification in the EE Software, nor enable,
+   unlock, or use any license-gated feature without a valid license key issued
+   by the copyright holder.
+
+3. NOTICES AND ATTRIBUTION
+
+   You may not alter, remove, or obscure any licensing, copyright, attribution,
+   or other notices contained in the EE Software, including any user-facing
+   "Powered by Nell" or equivalent attribution presented by an EE feature.
+
+4. NO WARRANTY
+
+   THE EE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
+   DAMAGES, OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THE
+   EE SOFTWARE OR ITS USE.
+
+The commercial terms, pricing, and scope (seat/tenant counts) are defined in the
+separate Nell Subscription Terms, which this license incorporates by reference.
+For a commercial license, contact the copyright holder.

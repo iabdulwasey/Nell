@@ -1,0 +1,22 @@
+{
+  "name": "@nell/core-app",
+  "version": "0.0.0",
+  "private": true,
+  "license": "FSL-1.1-Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "echo \"no build yet\" && exit 0",
+    "dev": "echo \"core dev server not implemented yet\" && exit 0",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"no tests yet\" && exit 0"
+  },
+  "dependencies": {
+    "@nell/agent": "workspace:*",
+    "@nell/aegis": "workspace:*",
+    "@nell/channels": "workspace:*",
+    "@nell/db": "workspace:*",
+    "@nell/durable": "workspace:*",
+    "@nell/shared": "workspace:*"
+  }
+}

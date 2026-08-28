@@ -1,0 +1,13 @@
+# Nell workspace. Supply-chain hardening: packages must be at least 24h old
+# before install (mitigates npm-hijack windows), and postinstall build scripts
+# are allowlisted rather than run blindly.
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "ee/*"
+
+minimumReleaseAgeStrict: true
+minimumReleaseAge: 1440
+allowBuilds:
+  esbuild: true
+  sharp: true

@@ -1,0 +1,15 @@
+node_modules
+.env*
+!.env.example
+.next
+.turbo
+.output
+dist
+*.tsbuildinfo
+coverage
+.DS_Store
+
+# Never commit the license signing key material.
+ee/license-server/
+*.key
+*.pem

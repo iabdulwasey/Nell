@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/license" },
+    { "path": "./packages/durable" },
+    { "path": "./packages/db" },
+    { "path": "./packages/aegis" },
+    { "path": "./packages/agent" },
+    { "path": "./packages/vault" },
+    { "path": "./packages/browser" },
+    { "path": "./packages/channels" },
+    { "path": "./packages/memory" },
+    { "path": "./packages/integrations" },
+    { "path": "./packages/audit" },
+    { "path": "./packages/evals" },
+    { "path": "./packages/recipes" },
+    { "path": "./apps/core" },
+    { "path": "./apps/web" },
+    { "path": "./ee/billing" },
+    { "path": "./ee/stripe-issuing" },
+    { "path": "./ee/control-plane" },
+    { "path": "./ee/admin" },
+    { "path": "./ee/onboarding-gating" }
+  ]
+}

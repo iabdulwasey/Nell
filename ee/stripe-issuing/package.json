@@ -1,0 +1,16 @@
+{
+  "name": "@nell-ee/stripe-issuing",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE ee/LICENSE",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"no tests yet\" && exit 0"
+  },
+  "dependencies": {
+    "@nell/license": "workspace:*"
+  }
+}

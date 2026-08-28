@@ -1,0 +1,47 @@
+# Nell self-host stack — the one-command deployment.
+#
+# The whole personal agent runs from this single image set with ONE stateful
+# dependency (Postgres). Commercial /ee features are not required to run this.
+#
+# Status: scaffold. Service images/build contexts are wired up in Phase 0 once
+# apps/core and apps/web are runnable. The shape below is the intended target.
+
+name: nell
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nell}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nell}
+      POSTGRES_DB: ${POSTGRES_DB:-nell}
+    volumes:
+      - nell-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nell}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # core:
+  #   build: ../../apps/core          # enabled in Phase 0
+  #   env_file: ../../.env
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   ports: ["4000:4000"]
+
+  # web:
+  #   build: ../../apps/web           # enabled in v1
+  #   env_file: ../../.env
+  #   depends_on: [core]
+  #   ports: ["3000:3000"]
+
+  # browser:                          # local Chromium sidecar for self-host
+  #   image: nell/browser-sidecar     # built in Phase 0
+  #   ports: ["9222:9222"]
+
+volumes:
+  nell-pgdata:
