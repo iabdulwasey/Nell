@@ -1,13 +1,33 @@
 /**
  * @nell/db
  *
- * Drizzle schema, migrations, and row-level-security policies over the single Postgres. Owns the tenant tables, the monitors table, and the audit-log table.
+ * Drizzle schema, migrations, and row-level-security policies over the single
+ * Postgres. Owns the tenant tables, the monitors table, and the audit log.
  *
  * Governed by: docs/architecture.md
- *
- * Status: scaffold stub. Implementation lands per the roadmap.
  */
 
-// TODO(phase-0): implement per the referenced doc.
+export {
+  approvals,
+  auditLog,
+  monitorReports,
+  monitors,
+  notificationOutbox,
+  preferences,
+  taskLedger,
+  tasks,
+  TENANT_TABLES,
+  vaultItems,
+  vaultSecrets,
+  workspaceMembers,
+  workspaces,
+} from "./schema.js";
 
-export const __stub = true;
+export {
+  appRoleSql,
+  assertNotBypassingRlsSql,
+  auditImmutabilitySql,
+  rlsPolicySql,
+  setWorkspaceSql,
+  WORKSPACE_SETTING,
+} from "./rls.js";

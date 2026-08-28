@@ -42,6 +42,18 @@ prompt. An attack becomes a runtime error, not a persuasion contest.
    memory deletion is written to an append-only, hash-chained log, visible to the
    user.
 
+8. **Tenant isolation, twice.** Application code filters every query by the
+   caller's workspace; PostgreSQL row-level security is the backstop for the
+   query that forgets. The request's workspace is published per transaction with
+   `SET LOCAL app.workspace_id`, so it cannot leak across a pooled connection.
+
+   **Deployment requirement:** the application's database role must be
+   `NOSUPERUSER NOBYPASSRLS`. Superusers ignore RLS entirely — verified against
+   PostgreSQL 17, where a superuser connection returned rows from every
+   workspace while a correctly-configured role returned only its own and had a
+   cross-tenant insert rejected. The app refuses to boot if its role can bypass
+   RLS.
+
 ## What this buys
 
 The documented failure modes of closed assistants — obeying an injected email,
