@@ -16,7 +16,7 @@ prompt. An attack becomes a runtime error, not a persuasion contest.
    field. The value never enters the model's context.
 
 3. **Server-side origin allowlist.** Each vault item is pinned to origins the
-   user confirmed. At fill time the server checks the browser's *actual* origin
+   user confirmed. At fill time the server checks the browser's _actual_ origin
    (queried over CDP) against the allowlist — the model does not get to name the
    origin.
 

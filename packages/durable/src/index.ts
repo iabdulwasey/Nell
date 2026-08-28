@@ -11,12 +11,6 @@
  * Phase 0 (the crash-resume spike is the first task and gates the engine).
  */
 
-export type {
-  DurableEngine,
-  StepOptions,
-  EnqueueOptions,
-  ScheduleOptions,
-} from "./engine.js";
+export type { DurableEngine, StepOptions, EnqueueOptions, ScheduleOptions } from "./engine.js";
 
-// TODO(phase-0): export the DBOS adapter from ./adapters/dbos.js once the
-// crash-resume spike passes. Until then there is no concrete engine bound.
+export { createDbosEngine, DbosDurableEngine, type DbosEngineConfig } from "./adapters/dbos.js";

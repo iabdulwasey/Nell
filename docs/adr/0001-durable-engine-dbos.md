@@ -54,3 +54,30 @@ effects.
 - **First task:** a crash-resume spike (start a multi-step workflow, SIGKILL
   mid-step, restart, assert resume-from-checkpoint and exactly-once side effect)
   gates building product on the engine.
+
+## Spike result — PASSED (2026-08-29)
+
+`packages/durable/src/spike/crash-resume.ts`, run against a real PostgreSQL 17
+instance. A three-step workflow (charge → book → receipt) was hard-killed with
+SIGKILL from inside step 2, then the process was restarted.
+
+Observed step log across both passes:
+
+```
+charge-card -> book-table-crashed-before-completion -> book-table -> send-receipt
+```
+
+- **Exactly-once side effect:** `charge-card` appears once. The completed step
+  was not re-executed on recovery — the card is not charged twice.
+- **Resume from checkpoint:** the workflow continued at step 2 rather than
+  restarting, and the engine logged `Recovering 1 workflows` on launch.
+- **Completion:** step 3 ran, so recovery carried the workflow to the end.
+
+This is the "kill the server mid-task on stage and it finishes" demo, validated
+on real infrastructure before any product code was built on the engine.
+
+**Finding from the spike:** `DBOSConfig` has no `databaseUrl` field — the
+correct key is `systemDatabaseUrl`. An initial run appeared to work only because
+the SDK fell back to the `DBOS_DATABASE_URL` environment variable; the
+typechecker caught the mismatch that the runtime had masked. The adapter now
+passes `systemDatabaseUrl` explicitly.

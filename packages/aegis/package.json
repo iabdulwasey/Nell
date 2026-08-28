@@ -8,10 +8,15 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "echo \"no tests yet\" && exit 0"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@nell/audit": "workspace:*",
     "@nell/shared": "workspace:*",
-    "@nell/audit": "workspace:*"
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "vitest": "4.1.10"
   }
 }

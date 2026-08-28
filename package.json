@@ -1,14 +1,10 @@
 {
   "name": "nell",
-  "private": true,
   "version": "0.0.0",
+  "private": true,
   "description": "Nell — Open Source Instinct. A personal AI agent you text to get things done. Source-available, self-hostable, asks before it acts.",
   "license": "FSL-1.1-Apache-2.0",
   "type": "module",
-  "packageManager": "pnpm@11.15.1",
-  "engines": {
-    "node": ">=22"
-  },
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
@@ -22,9 +18,15 @@
     "licenses:check": "node scripts/check-licenses.mjs"
   },
   "devDependencies": {
+    "@types/node": "24.13.3",
     "oxfmt": "0.64.0",
     "oxlint": "1.78.0",
     "turbo": "2.10.5",
-    "typescript": "6.0.3"
-  }
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.15.1"
 }

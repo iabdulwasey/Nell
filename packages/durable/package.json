@@ -8,9 +8,18 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "echo \"no tests yet\" && exit 0"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@nell/shared": "workspace:*"
+    "@dbos-inc/dbos-sdk": "4.27.6",
+    "@nell/shared": "workspace:*",
+    "pg": "8.23.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/pg": "8.23.1",
+    "tsx": "4.20.3",
+    "vitest": "4.1.10"
   }
 }

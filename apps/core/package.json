@@ -12,11 +12,14 @@
     "test": "echo \"no tests yet\" && exit 0"
   },
   "dependencies": {
-    "@nell/agent": "workspace:*",
     "@nell/aegis": "workspace:*",
+    "@nell/agent": "workspace:*",
     "@nell/channels": "workspace:*",
     "@nell/db": "workspace:*",
     "@nell/durable": "workspace:*",
     "@nell/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3"
   }
 }

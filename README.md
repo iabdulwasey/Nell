@@ -8,7 +8,7 @@ Book the table. Buy the tickets. Cancel the subscription. Watch for the drop.
 Nell works across your messages, your browser, and your accounts — and asks
 before it does anything it can't take back.
 
-*Source-available · self-hostable · your keys, your data · it asks first.*
+_Source-available · self-hostable · your keys, your data · it asks first._
 
 </div>
 
