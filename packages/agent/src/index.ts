@@ -60,3 +60,15 @@ export {
   type BudgetEnvelope,
   type VaultHandle,
 } from "./briefing.js";
+
+export {
+  drainQueue,
+  handleMessage,
+  handleWorkerResult,
+  progressFrom,
+  type CoordinatorState,
+  type Effect,
+  type HandleMessageInput,
+  type Intent,
+  type WorkerResult,
+} from "./coordinator.js";
