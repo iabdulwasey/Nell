@@ -1,13 +1,40 @@
 /**
  * @nell/memory
  *
- * The four memory tiers (preference profile, episodic task ledger, playbooks, rebuildable semantic index), the single-writer consolidation workflow, and the durable deletion workflows. Writes accept only trusted-provenance content.
+ * Tier 1 (preference profile) and tier 2 (episodic task ledger): the memory that
+ * makes the agent feel like it knows you, and the record that makes "book it
+ * like last time" possible.
+ *
+ * Untrusted content can never write a preference — a preference is effectively a
+ * standing instruction, so accepting one from a web page would be prompt
+ * injection with persistence.
  *
  * Governed by: docs/architecture.md
- *
- * Status: scaffold stub. Implementation lands per the roadmap.
  */
 
-// TODO(phase-0): implement per the referenced doc.
+export {
+  forgetPreference,
+  liveProfile,
+  MAX_VALUE_LENGTH,
+  preferenceCategorySchema,
+  renderProfile,
+  writePreference,
+  type Preference,
+  type PreferenceCategory,
+  type WriteOptions,
+  type WriteRejection,
+  type WriteResult,
+} from "./preferences.js";
 
-export const __stub = true;
+export {
+  lastSuccessAt,
+  recall,
+  recordTask,
+  renderPrecedents,
+  sanitizeDetail,
+  taskOutcomeSchema,
+  type LedgerEntry,
+  type RecallQuery,
+  type RecordOptions,
+  type TaskOutcome,
+} from "./ledger.js";
