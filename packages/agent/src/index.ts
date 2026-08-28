@@ -25,3 +25,29 @@ export {
   type RouteRequest,
   type Usage,
 } from "./model-router.js";
+
+export {
+  activeTasks,
+  admit,
+  canTransition,
+  DEFAULT_CONCURRENCY,
+  isActive,
+  isTerminal,
+  runningCount,
+  taskStatusSchema,
+  transition,
+  type Task,
+  type TaskStatus,
+  type TransitionResult,
+} from "./tasks.js";
+
+export {
+  coalesce,
+  isBareReply,
+  QUIET_WINDOW_MS,
+  routeMessage,
+  type CoalesceResult,
+  type InboundMessage,
+  type ProgressEvent,
+  type RouteTarget,
+} from "./steering.js";
