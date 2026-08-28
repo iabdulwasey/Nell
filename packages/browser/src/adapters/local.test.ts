@@ -10,8 +10,25 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { accessScopeForUser } from "@nell/shared";
+import { chromium } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LocalBrowserProvider } from "./local.js";
+
+/**
+ * These tests need a real Chromium. Rather than fail on a machine that has not
+ * run `playwright install`, the suite skips itself — a contributor who has not
+ * downloaded browsers still gets a green run, and CI installs Chromium so the
+ * coverage is real where it counts.
+ */
+function chromiumAvailable(): boolean {
+  try {
+    return Boolean(chromium.executablePath());
+  } catch {
+    return false;
+  }
+}
+
+const describeBrowser = chromiumAvailable() ? describe : describe.skip;
 
 const PAGE = `<!doctype html>
 <html><body>
@@ -54,7 +71,7 @@ afterAll(async () => {
   });
 });
 
-describe("LocalBrowserProvider", () => {
+describeBrowser("LocalBrowserProvider", () => {
   it("creates a session and reports the real origin", async () => {
     const session = await provider.createSession(scope, { startUrl: origin });
     expect(session.workspaceId).toBe(scope.workspaceId);
