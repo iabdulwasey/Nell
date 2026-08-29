@@ -30,3 +30,14 @@ export {
   tagForTask,
   toPlainText,
 } from "./render.js";
+
+export {
+  SECRET_HEADER,
+  TELEGRAM_CAPABILITIES,
+  TELEGRAM_MAX_MESSAGE,
+  TelegramChannel,
+  toTelegramHtml,
+  type TelegramOptions,
+  type TelegramRequest,
+  type TelegramTransport,
+} from "./telegram.js";

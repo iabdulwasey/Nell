@@ -36,3 +36,27 @@ export {
   type SearchQuery,
   type SearchResult,
 } from "./search.js";
+
+export {
+  asRawContent,
+  draftReply,
+  emailAddressSchema,
+  flagInjectionAttempt,
+  MAX_MESSAGES,
+  mailGistSchema,
+  mailSummarySchema,
+  readMail,
+  renderMail,
+  type DraftCreated,
+  type DraftOptions,
+  type DraftOutcome,
+  type DraftRefusalReason,
+  type DraftRequest,
+  type EmailMessage,
+  type MailGist,
+  type MailProvider,
+  type MailQuery,
+  type MailReading,
+  type MailSummary,
+  type ReadMailOptions,
+} from "./gmail.js";
