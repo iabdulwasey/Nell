@@ -107,3 +107,23 @@ export {
   type OtpGrant,
   type RedeemOtpOptions,
 } from "./otp-grant.js";
+
+export {
+  authorizeStanding,
+  describeEnvelope,
+  envelopeSchema,
+  explainStandingDenial,
+  hashStandingToken,
+  markStandingSpent,
+  mintStandingApproval,
+  revokeStanding,
+  STANDING_APPROVAL_TTL_MS,
+  STANDING_CEILING,
+  type AuthorizeStandingOptions,
+  type Envelope,
+  type MintStandingOptions,
+  type MintStandingOutcome,
+  type StandingApproval,
+  type StandingDecision,
+  type StandingDenial,
+} from "./standing-approval.js";

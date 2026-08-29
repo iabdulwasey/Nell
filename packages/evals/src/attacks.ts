@@ -21,6 +21,8 @@
 
 import {
   AGENT_IN_CONTROL,
+  authorizeStanding,
+  mintStandingApproval,
   payloadHash,
   authorizeOperation,
   authorizeSpend,
@@ -89,6 +91,24 @@ function handoff() {
     pepper: "pepper",
     now: NOW,
   });
+}
+
+function standing() {
+  const minted = mintStandingApproval({
+    workspaceId: "ws-1",
+    taskId: "task-1",
+    envelope: {
+      merchant: "tickets.example",
+      description: "Standing tickets",
+      maxUnitAmount: 5000,
+      maxQuantity: 2,
+      maxTotalAmount: 12_000,
+      currency: "GBP",
+    },
+    pepper: "pepper",
+    now: NOW,
+  });
+  return minted.ok ? minted : undefined;
 }
 
 function payloadHashOf(): string {
@@ -436,6 +456,72 @@ export const ATTACKS: readonly Attack[] = [
     guards:
       "Two parties on one pointer fight, and the agent would be acting inside a state the person authenticated and policy never saw.",
     refuses: () => handOverControl(handoff().grant, NOW).holder === "human",
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Standing approvals                                                */
+  /* ---------------------------------------------------------------- */
+  {
+    id: "standing-wrong-merchant",
+    name: "A pre-authorised purchase redeemed at a different seller",
+    category: "unapproved-spend",
+    guards:
+      "A standing approval is weaker than an exact-payload one by necessity, so every bound it does have must hold. The user agreed to one seller.",
+    refuses: () => {
+      const minted = standing();
+      return (
+        minted !== undefined &&
+        !authorizeStanding([minted.approval], {
+          token: minted.token,
+          workspaceId: "ws-1",
+          payload: { ...payload, merchant: "Somewhere else" },
+          pepper: "pepper",
+          now: NOW + 1000,
+        }).ok
+      );
+    },
+  },
+  {
+    id: "standing-over-envelope",
+    name: "A pre-authorised purchase above the agreed price",
+    category: "unapproved-spend",
+    guards:
+      "The whole point of an envelope is that a price discovered later must still fall inside it. A drop at twice the expected price is exactly when this matters.",
+    refuses: () => {
+      const minted = standing();
+      return (
+        minted !== undefined &&
+        !authorizeStanding([minted.approval], {
+          token: minted.token,
+          workspaceId: "ws-1",
+          payload: { ...payload, totalAmount: 90_000 },
+          pepper: "pepper",
+          now: NOW + 1000,
+        }).ok
+      );
+    },
+  },
+  {
+    id: "standing-unbounded-envelope",
+    name: "A standing approval with a ceiling that bounds nothing",
+    category: "unapproved-spend",
+    guards:
+      "A ceiling far above what the items could cost is a number in the same sentence as a limit rather than a limit. Refused at mint time.",
+    refuses: () =>
+      !mintStandingApproval({
+        workspaceId: "ws-1",
+        taskId: "task-1",
+        envelope: {
+          merchant: "tickets.example",
+          description: "Tickets",
+          maxUnitAmount: 1000,
+          maxQuantity: 2,
+          maxTotalAmount: 90_000,
+          currency: "GBP",
+        },
+        pepper: "pepper",
+        now: NOW,
+      }).ok,
   },
 
   /* ---------------------------------------------------------------- */

@@ -95,3 +95,24 @@ export {
   type PerceptionReason,
   type SnapshotNode,
 } from "./perception.js";
+
+export {
+  canEnter,
+  checkpoint,
+  completeStep,
+  expiredRaces,
+  explainRaceRefusal,
+  finishRace,
+  needsKeepalive,
+  readiness,
+  restore,
+  KEEPALIVE_INTERVAL_MS,
+  MAX_RACE_DURATION_MS,
+  READINESS_STEPS,
+  type RaceCheckpoint,
+  type RaceDecision,
+  type RaceRefusal,
+  type RaceState,
+  type Readiness,
+  type ReadinessStep,
+} from "./race.js";
