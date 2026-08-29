@@ -25,7 +25,7 @@
 import { explainPlanFailure, planNext, type ModelProvider } from "@nell/agent";
 import { renderFindings, searchWeb, type SearchProvider } from "@nell/integrations";
 import type { BrowserExecutor } from "@nell/aegis";
-import type { BrowserProvider, PageSnapshot } from "@nell/browser";
+import { detectBlock, explainBlock, type BrowserProvider, type PageSnapshot } from "@nell/browser";
 import type { AccessScope } from "@nell/shared";
 
 export interface LoopDeps {
@@ -115,6 +115,27 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     // A fresh look every time. The previous plan's refs died the moment this
     // ran, which is the point — a stale plan cannot half-apply.
     const snapshot = await deps.provider.snapshot(request.scope, request.sessionId);
+
+    /**
+     * Stop at a wall rather than clicking at it.
+     *
+     * Checked before the model is asked anything, because a model asked "what do
+     * I click next" will always find something to click — that is the question
+     * it was given. Watched live: four sites in a row refused a headless
+     * browser, each one was reported as "an access warning" the agent was
+     * "proceeding past", and a whole step budget went on a button it had
+     * invented. The page said, in a heading, that it had blocked us.
+     *
+     * Ending here converts an expensive nonsense answer into a cheap true one.
+     */
+    const block = detectBlock(snapshot);
+    if (block.blocked) {
+      return {
+        ok: false,
+        steps: step,
+        reason: explainBlock(block, snapshot.url),
+      };
+    }
 
     const fingerprint = fingerprintOf(snapshot);
     unchanged = fingerprint === previousFingerprint ? unchanged + 1 : 0;

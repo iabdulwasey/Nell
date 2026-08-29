@@ -108,8 +108,32 @@ export class LocalBrowserProvider implements BrowserProvider {
   }
 
   async #ensureBrowser(): Promise<Browser> {
+    /**
+     * Ordinary hygiene, not evasion.
+     *
+     * A bare launch is the most conspicuous configuration available:
+     * `navigator.webdriver` is true and the user agent says `HeadlessChrome`,
+     * both of which any site can read in one line of JavaScript. Watched live,
+     * four consecutive sites refused on exactly that basis and the task ended
+     * with nothing.
+     *
+     * The flag removes the `webdriver` property; the user agent is corrected
+     * where contexts are created. Neither claims to be anything the browser is
+     * not — it *is* Chromium, at the version it reports — they stop it
+     * announcing that a program is holding the mouse.
+     *
+     * This will not beat serious bot detection, which fingerprints TLS and
+     * canvas and timing, and saying so matters: the honest answers to that are
+     * the user's own browser over the companion, or a vendor with residential
+     * egress. Anything here is the easy half.
+     *
+     * Site isolation is deliberately left alone. Turning it off is the usual
+     * next suggestion and it weakens a real security boundary in a browser that
+     * handles the user's logged-in sessions.
+     */
     this.#browser ??= await chromium.launch({
       headless: this.#options.headless ?? true,
+      args: ["--disable-blink-features=AutomationControlled"],
     });
     return this.#browser;
   }
@@ -135,6 +159,12 @@ export class LocalBrowserProvider implements BrowserProvider {
     const context = await browser.newContext({
       viewport: { width: space.viewport.width, height: space.viewport.height },
       deviceScaleFactor: space.display.width / space.viewport.width,
+      // Derived from the running browser rather than invented: a user agent
+      // claiming a version the browser does not have is a stronger signal than
+      // the one it replaces, since everything else about the page still reports
+      // the truth.
+      userAgent: presentableUserAgent(browser.version()),
+      locale: "en-US",
     });
     const page = await context.newPage();
 
@@ -372,4 +402,27 @@ function locate(page: Page, target: Target, snapshotVersion: number): Locator {
     case "css":
       return page.locator(target.selector).first();
   }
+}
+
+/**
+ * The browser's own user agent, minus the word that gives it away.
+ *
+ * Playwright reports `HeadlessChrome/141.0.0.0` when headless, which is both
+ * accurate and the single easiest thing for a site to key on. The version is
+ * taken from the live browser, so this stays true as Chromium updates and never
+ * claims a version that is not running.
+ */
+function presentableUserAgent(version: string): string {
+  const major = version.split(".")[0] ?? "141";
+  const platform =
+    process.platform === "darwin"
+      ? "Macintosh; Intel Mac OS X 10_15_7"
+      : process.platform === "win32"
+        ? "Windows NT 10.0; Win64; x64"
+        : "X11; Linux x86_64";
+
+  return (
+    `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) ` +
+    `Chrome/${major}.0.0.0 Safari/537.36`
+  );
 }

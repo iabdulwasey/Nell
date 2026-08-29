@@ -7,6 +7,7 @@
  * Governed by: docs/architecture.md, docs/security-model.md
  */
 
+export { detectBlock, explainBlock, type BlockKind, type BlockVerdict } from "./blocked.js";
 export {
   actionBatchSchema,
   actionSchema,
