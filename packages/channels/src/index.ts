@@ -41,3 +41,32 @@ export {
   type TelegramRequest,
   type TelegramTransport,
 } from "./telegram.js";
+
+export {
+  chooseSendMode,
+  toWhatsAppFormatting,
+  SERVICE_WINDOW_MS,
+  SIGNATURE_HEADER,
+  TEMPLATES,
+  WhatsAppChannel,
+  WHATSAPP_CAPABILITIES,
+  WHATSAPP_MAX_MESSAGE,
+  type MessageTemplate,
+  type SendMode,
+  type WhatsAppOptions,
+  type WhatsAppRequest,
+  type WhatsAppTransport,
+} from "./whatsapp.js";
+
+export {
+  complianceKeyword,
+  complianceReply,
+  IMessageChannel,
+  IMESSAGE_CAPABILITIES,
+  IMESSAGE_MAX_MESSAGE,
+  IMESSAGE_SIGNATURE_HEADER,
+  type ComplianceKeyword,
+  type IMessageOptions,
+  type IMessageRequest,
+  type IMessageTransport,
+} from "./imessage.js";
