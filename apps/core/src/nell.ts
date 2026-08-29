@@ -26,17 +26,18 @@ import type { Pool } from "pg";
 import { runLoop, type LoopOutcome } from "./agent-loop.js";
 import { withWorkspace } from "./db.js";
 import { pollOnce, replyToStranger, sendMessage, type InboundMessage } from "./telegram-poll.js";
+import type { WorkspaceSessions } from "./workspace-session.js";
 
 export interface NellOptions {
   readonly pool: Pool;
   readonly browser: BrowserProvider;
+  /** The workspace's long-lived browser. Outlives any one task, by design. */
+  readonly sessions: WorkspaceSessions;
   readonly keys: ProviderKeys;
   readonly modelId: string;
   readonly telegramToken: string;
   /** Telegram sender id → user id. Everyone else is a stranger. */
   readonly knownSenders: ReadonlyMap<string, string>;
-  /** Where a task starts. A real deployment would let the agent search first. */
-  readonly startUrl: string;
   readonly log?: (line: string) => void;
 }
 
@@ -125,12 +126,10 @@ export async function handleMessage(
 
   await reply("On it.");
 
-  let sessionId: string | undefined;
   let outcome: LoopOutcome;
 
   try {
-    const session = await options.browser.createSession(scope, { startUrl: options.startUrl });
-    sessionId = session.id;
+    const session = await options.sessions.acquire(scope);
 
     outcome = await runLoop(
       {
@@ -157,11 +156,11 @@ export async function handleMessage(
       steps: 0,
       reason: error instanceof Error ? error.message : "Something went wrong.",
     };
-  } finally {
-    if (sessionId) {
-      await options.browser.destroy(scope, sessionId).catch(() => undefined);
-    }
   }
+  // No `finally` closing the browser: the session outlives the task on purpose,
+  // because the logins and cookies in it are what make the next task cheaper.
+  // It is closed on shutdown, or when the user asks for it to be destroyed —
+  // which is a deletion with a receipt, not cleanup.
 
   await withWorkspace(options.pool, scope, async (client) => {
     await client.query(`UPDATE tasks SET status = $2, updated_at = now() WHERE id = $1`, [

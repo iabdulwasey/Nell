@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { accessScopeForUser } from "@nell/shared";
 import { createPool, withWorkspace } from "./db.js";
 import { handleMessage, type NellOptions } from "./nell.js";
+import { WorkspaceSessions } from "./workspace-session.js";
 import type { InboundMessage } from "./telegram-poll.js";
 
 const keys = keysFromEnv(process.env);
@@ -43,6 +44,7 @@ let server: Server;
 let origin: string;
 let pool: Pool;
 let browser: LocalBrowserProvider;
+let sessions: WorkspaceSessions;
 let sent: string[] = [];
 let options: NellOptions;
 
@@ -109,6 +111,7 @@ beforeAll(async () => {
   await pool.query("TRUNCATE tasks, workspace_members, workspaces CASCADE");
 
   browser = new LocalBrowserProvider({ headless: true });
+  sessions = new WorkspaceSessions({ provider: browser, startUrl: origin });
   options = {
     pool,
     browser,
@@ -116,7 +119,7 @@ beforeAll(async () => {
     modelId: "anthropic/claude-sonnet-4-5",
     telegramToken: "test-token",
     knownSenders: new Map([["111", "ada"]]),
-    startUrl: origin,
+    sessions,
   };
 
   // The stub replaces the network for Telegram only; the model and the browser
@@ -135,6 +138,7 @@ afterAll(async () => {
   if (!ready) return;
   await pool.query("TRUNCATE tasks, workspace_members, workspaces CASCADE");
   await pool.end();
+  await sessions.close();
   await browser.shutdown();
   await new Promise<void>((resolve) => {
     server.close(() => {

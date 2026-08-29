@@ -10,6 +10,7 @@ import { LocalBrowserProvider } from "@nell/browser/adapters";
 import { keysFromEnv } from "@nell/agent";
 import { assertRlsEnforceable, createPool } from "./db.js";
 import { run } from "./nell.js";
+import { WorkspaceSessions } from "./workspace-session.js";
 
 const token = process.env["TELEGRAM_BOT_TOKEN"];
 const databaseUrl = process.env["DATABASE_URL"];
@@ -39,6 +40,7 @@ const pool = createPool(databaseUrl!);
 await assertRlsEnforceable(pool);
 
 const browser = new LocalBrowserProvider({ headless: process.env["NELL_HEADED"] !== "1" });
+const sessions = new WorkspaceSessions({ provider: browser, startUrl });
 
 const controller = new AbortController();
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -59,7 +61,7 @@ await run(
     modelId,
     telegramToken: token!,
     knownSenders: new Map([[owner!, `tg-${owner!}`]]),
-    startUrl,
+    sessions,
     log: (line) => {
       console.log(line);
     },
@@ -67,5 +69,6 @@ await run(
   controller.signal
 );
 
+await sessions.close();
 await browser.shutdown();
 await pool.end();
