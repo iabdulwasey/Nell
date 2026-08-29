@@ -39,13 +39,18 @@ export interface LoopDeps {
    * navigating, which is what search engines block.
    */
   readonly search?: SearchProvider;
+  /** Injected so a stall can be tested without waiting five minutes. */
+  readonly clock?: () => number;
 }
 
 export interface LoopRequest {
   readonly scope: AccessScope;
   readonly sessionId: string;
   readonly objective: string;
+  /** A hard backstop on model calls. The real bound is `stallMs`. */
   readonly maxSteps?: number;
+  /** How long without progress before giving up. Defaults to `STALL_MS`. */
+  readonly stallMs?: number;
   /**
    * What Nell knows about this user, already rendered. Empty when it knows
    * nothing, which is the state every task was in before tier-1 memory had a
@@ -59,16 +64,35 @@ export interface LoopRequest {
 }
 
 /**
- * Enough to finish an ordinary booking, few enough that a stuck agent stops
- * being expensive quickly.
+ * How long a task may make no progress before it is abandoned.
+ *
+ * The bound that replaced a step count, and the change is not cosmetic. A step
+ * limit asks "how much work is reasonable?" and answers with a number picked in
+ * advance; the question that actually matters is "is this getting anywhere?",
+ * and only the run can answer it. Twelve steps was a guess, and watching a real
+ * booking disproved it — the agent searched, found the cinema, opened the film,
+ * chose the 10pm showing, selected two tickets and reached checkout, then hit
+ * the ceiling one step from the approval it was meant to stop at. Every step had
+ * been necessary. The limit was cutting off correct work.
+ *
+ * So: progress buys time, and nothing else does.
  */
-export const MAX_STEPS = 12;
+export const STALL_MS = 5 * 60 * 1000;
 
-/** Identical pages in a row before concluding the agent is stuck rather than working. */
+/**
+ * What counts as progress.
+ *
+ * The page changed, a search returned, or the agent moved to a different page —
+ * anything that alters what it is working from. Deliberately *not* "an action
+ * succeeded": clicking a button that does nothing succeeds, and an agent doing
+ * that forever is the exact failure this bounds.
+ */
+
+/** Identical pages in a row before the structured sense is considered exhausted. */
 export const STUCK_AFTER = 3;
 
 /**
- * Failed actions in a row before giving up.
+ * Failed actions in a row before the structured sense is considered exhausted.
  *
  * Consecutive, not total: a page that refuses one click and then works is
  * ordinary, and a task should not carry a grudge from step two into step nine.
@@ -76,15 +100,14 @@ export const STUCK_AFTER = 3;
 export const MAX_ACTION_FAILURES = 3;
 
 /**
- * Extra steps granted when the agent switches to looking.
+ * A backstop, not a budget.
  *
- * Escalation is a new approach, not a continuation, and it arrives late by
- * construction — the structured sense has to fail first. Measured on the task
- * that prompted this: nine steps spent structurally, three left for vision,
- * which is not enough to read a page and act on it. Without its own allowance
- * the second sense is switched on just in time to run out.
+ * With progress as the real bound this should never be reached — five minutes of
+ * genuine stalling ends a task long before a hundred steps do. It exists because
+ * "unbounded" and "bounded by something that could itself fail" are different
+ * claims, and every step is a model call somebody pays for.
  */
-export const VISION_STEPS = 8;
+export const HARD_STEP_CAP = 100;
 
 export type LoopOutcome =
   /**
@@ -120,7 +143,11 @@ export type LoopOutcome =
  * whoever reads it.
  */
 export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<LoopOutcome> {
-  let limit = request.maxSteps ?? MAX_STEPS;
+  const cap = request.maxSteps ?? HARD_STEP_CAP;
+  const stallAfter = request.stallMs ?? STALL_MS;
+  const clock = deps.clock ?? Date.now;
+  /** Reset by anything that changes what the agent is working from. */
+  let lastProgressAt = clock();
   const history: string[] = [];
   let unchanged = 0;
   let previousFingerprint = "";
@@ -145,13 +172,52 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
   const searched = new Set<string>();
   /** Reset by any step that works, so a wobble mid-task does not count toward a wall. */
   let consecutiveFailures = 0;
+  /** Every page state this task has been in. Returning to one is not progress. */
+  const seen = new Set<string>();
   /** Once the structured sense has stalled, the rest of the task is driven by eye. */
   let looking = false;
 
-  for (let step = 1; step <= limit; step += 1) {
-    // A fresh look every time. The previous plan's refs died the moment this
-    // ran, which is the point — a stale plan cannot half-apply.
-    const snapshot = await deps.provider.snapshot(request.scope, request.sessionId);
+  for (let step = 1; step <= cap; step += 1) {
+    /**
+     * The real bound: five minutes of getting nowhere.
+     *
+     * Checked before the work rather than after, so a task that has already
+     * stalled does not buy one more model call on its way out.
+     */
+    if (clock() - lastProgressAt > stallAfter) {
+      const minutes = String(Math.round(stallAfter / 60_000));
+      const stalled = `I stopped after ${minutes} minutes without getting anywhere on this.`;
+      return {
+        ok: false,
+        steps: step,
+        stuck: true,
+        reason: partial ? `${stalled}\n\nWhat I had so far:\n\n${partial}` : stalled,
+      };
+    }
+
+    /**
+     * A fresh look every time. The previous plan's refs died the moment this
+     * ran, which is the point — a stale plan cannot half-apply.
+     *
+     * Guarded, because looking can fail: pressing Enter starts a navigation, and
+     * a snapshot taken while it is in flight throws "Execution context was
+     * destroyed". That is not a broken task, it is a page mid-move — but
+     * uncaught it ended the process. Waiting a moment and looking again is the
+     * whole fix, and it is what a person would do.
+     */
+    let snapshot;
+    try {
+      snapshot = await deps.provider.snapshot(request.scope, request.sessionId);
+    } catch (error) {
+      const failure = humanise(error);
+      request.onDiagnostic?.(`could not read the page: ${failure.detail}`);
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= MAX_ACTION_FAILURES && looking) {
+        return { ok: false, steps: step, reason: failure.message, detail: failure.detail };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      continue;
+    }
 
     /**
      * Stop at a wall rather than clicking at it.
@@ -179,6 +245,25 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     previousFingerprint = fingerprint;
 
     /**
+     * Progress is a page it has not been on before — not merely a page that
+     * changed.
+     *
+     * The distinction is the whole bound. Watched live: the agent bounced
+     * between a cinema's home page and its search results for nearly three
+     * minutes — home, search, home, search — and every single turn "changed the
+     * page", so nothing ever looked stuck. It was moving and getting nowhere,
+     * which is what a loop is.
+     *
+     * Revisiting is therefore silent: only somewhere new resets the clock. An
+     * agent going round in circles now runs out of time exactly as if it had
+     * been standing still, because it had been.
+     */
+    if (!seen.has(fingerprint)) {
+      seen.add(fingerprint);
+      lastProgressAt = clock();
+    }
+
+    /**
      * The page stopped changing — so look at it instead.
      *
      * This used to end the task. It was the most common way a task died, and it
@@ -193,11 +278,11 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
      * cheap one has demonstrably stopped producing information, which is the
      * only moment its cost is clearly worth paying.
      */
-    if (unchanged >= STUCK_AFTER && !looking) {
+    if ((unchanged >= STUCK_AFTER || consecutiveFailures >= MAX_ACTION_FAILURES) && !looking) {
       looking = true;
       unchanged = 0;
+      consecutiveFailures = 0;
       previousFingerprint = "";
-      limit = step + VISION_STEPS;
       request.onDiagnostic?.("structured sense stalled; switching to vision");
       history.push(
         "Reading the page structurally stopped telling me anything new, so I am looking at the screen."
@@ -205,7 +290,12 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     }
 
     if (looking) {
-      const seen = await lookAndAct(deps, request, { history, step, profile: request.profile });
+      const seen = await lookAndAct(deps, request, {
+        history,
+        step,
+        searched,
+        ...(request.profile ? { profile: request.profile } : {}),
+      });
       if (seen.done) return seen.outcome;
       if (seen.answer) partial = seen.answer;
       continue;
@@ -256,6 +346,8 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
         renderFindings(await searchWeb({ query: planned.plan.search }, { provider: deps.search }))
       );
       request.onStep?.(`Searching for "${planned.plan.search}".`);
+      // Knowing something new is progress, even though the page has not moved.
+      lastProgressAt = clock();
 
       /**
        * Re-plan rather than run this turn's actions.
@@ -325,7 +417,17 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
       const failure = humanise(error);
       request.onDiagnostic?.(`step ${String(step)} failed: ${failure.detail}`);
 
-      if (consecutiveFailures >= MAX_ACTION_FAILURES) {
+      /**
+       * A page that refuses everything is not a reason to stop — it is a reason
+       * to look at it. Ending here was throwing away the second sense at exactly
+       * the moment it was most likely to help: a click that times out three
+       * times usually means the element is not where the accessibility tree says
+       * it is, which is precisely what a screenshot settles.
+       *
+       * Once already looking, repeated failure is real, and the stall clock ends
+       * it rather than a counter.
+       */
+      if (consecutiveFailures >= MAX_ACTION_FAILURES && looking) {
         return { ok: false, steps: step, reason: failure.message, detail: failure.detail };
       }
 
@@ -344,12 +446,13 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     }
   }
 
-  const ranOut = `I did not finish within ${String(limit)} steps, so I stopped rather than keep going.`;
+  const capped =
+    "I have been at this a long time without finishing, so I stopped rather than keep going.";
 
   return {
     ok: false,
-    steps: limit,
-    reason: partial ? `${ranOut}\n\nWhat I had so far:\n\n${partial}` : ranOut,
+    steps: cap,
+    reason: partial ? `${capped}\n\nWhat I had so far:\n\n${partial}` : capped,
   };
 }
 
@@ -357,6 +460,8 @@ interface LookState {
   readonly history: string[];
   readonly step: number;
   readonly profile?: string;
+  /** Shared with the structured turn, so a query is never paid for twice. */
+  readonly searched: Set<string>;
 }
 
 interface LookResult {
@@ -445,6 +550,41 @@ async function lookAndAct(
 
   request.onStep?.(planned.plan.reasoning);
   state.history.push(planned.plan.reasoning);
+
+  /**
+   * Leaving the page, which the looking sense cannot do by itself.
+   *
+   * Handled before the actions for the same reason a search is in the structured
+   * turn: whatever was planned to click was planned against the page being left.
+   * Navigation goes through the ordinary `goto`, so it meets the same validation
+   * — http(s) only — as every other navigation in the system. The looking sense
+   * gets a way out of a dead end, not a way around the gate.
+   */
+  if (planned.plan.navigate) {
+    try {
+      await deps.executor.execute(request.scope, request.sessionId, {
+        kind: "targeted",
+        actions: [{ action: "goto", url: planned.plan.navigate, waitUntil: "domcontentloaded" }],
+      });
+    } catch (error) {
+      const failure = humanise(error);
+      request.onDiagnostic?.(`vision navigate failed: ${failure.detail}`);
+      state.history.push(`I could not open ${planned.plan.navigate}. Try somewhere else.`);
+    }
+    return { done: false, outcome: { ok: false, steps: state.step, reason: "" } };
+  }
+
+  if (planned.plan.search && deps.search && !state.searched.has(planned.plan.search)) {
+    state.searched.add(planned.plan.search);
+    const results = renderFindings(
+      await searchWeb({ query: planned.plan.search }, { provider: deps.search })
+    );
+    request.onStep?.(`Searching for "${planned.plan.search}".`);
+    // Into history, because the looking sense reads history and has nowhere else
+    // to put text it did not see on the screen.
+    state.history.push(results);
+    return { done: false, outcome: { ok: false, steps: state.step, reason: "" } };
+  }
 
   if (planned.plan.done) {
     return {

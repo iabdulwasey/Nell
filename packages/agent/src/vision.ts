@@ -100,12 +100,34 @@ export function buildVisionSchema(): Record<string, unknown> {
           "size given. Stop before anything that spends money or sends a message.",
         items: drivableActions(),
       },
+      /**
+       * Beside the actions, because there is nothing on screen to click.
+       *
+       * A headless browser renders the page and not the browser chrome, so there
+       * is no address bar in the screenshot. Without this the looking sense is
+       * stranded on whatever page it inherited — observed exactly: the agent
+       * decided it should go back to Google, spent eight turns trying to click
+       * an address bar that does not exist, and ran out of budget on a page it
+       * had already given up on.
+       */
+      navigate: {
+        type: "string",
+        description:
+          "A URL to open before acting, when what you need is on a different page. " +
+          "There is no address bar to click. Leave empty to stay here.",
+      },
+      search: {
+        type: "string",
+        description:
+          "A web search to run, when you need to find a page rather than act on this one. " +
+          "Returns titles and URLs. Leave empty if not needed.",
+      },
       done: {
         type: "boolean",
         description: "True when the objective is achieved and nothing more is needed.",
       },
     },
-    required: ["reasoning", "actions", "done", "answer"],
+    required: ["reasoning", "actions", "done", "answer", "navigate", "search"],
   };
 }
 
@@ -116,6 +138,8 @@ const rawSchema = z.object({
   actions: z.array(z.unknown()).default([]),
   done: z.boolean().default(false),
   answer: z.string().max(8000).default(""),
+  navigate: z.string().max(2000).default(""),
+  search: z.string().max(400).default(""),
 });
 
 /** Same shape as a structured plan, so the loop treats the two identically. */
@@ -124,6 +148,10 @@ export interface VisionPlan {
   readonly actions: readonly ComputerAction[];
   readonly done: boolean;
   readonly answer: string;
+  /** A page to open first. The looking sense has no address bar to use. */
+  readonly navigate: string;
+  /** A search to run first. */
+  readonly search: string;
 }
 
 export type VisionOutcome =
@@ -148,6 +176,14 @@ export const VISION_PROMPT = [
   "",
   "You are given a fresh screenshot every turn, so never ask for one — looking is",
   "not a move. Every reply must either do something or finish.",
+  "",
+  'If the user names a search engine — "check Google", "look on Bing" — they mean',
+  "look it up, not that you must visit that site. Use `search`; going there yourself",
+  "earns a captcha and finishes the task no further forward.",
+  "",
+  "You see the page only. There is no address bar, no tabs, no browser buttons —",
+  "clicking where you expect them does nothing. To open a different page put its",
+  "URL in `navigate`, and to find one put a query in `search`.",
   "",
   "The user cannot see the screen. They see only what you write, so when you find",
   "the answer, read it off the screen and write it out in full.",
@@ -190,8 +226,9 @@ export async function planFromScreen(request: VisionRequest): Promise<VisionOutc
     return { ok: false, reason: "The model did not answer with a plan.", retryable: true };
   }
 
-  // Finishing with nothing to click is valid, and the action schema requires at
-  // least one — so it is handled before validation rather than as a bad plan.
+  // Finishing, navigating and searching are all valid turns with nothing to
+  // click, and the action schema requires at least one — so they are handled
+  // before validation rather than treated as malformed plans.
   if (parsed.data.actions.length === 0) {
     return {
       ok: true,
@@ -200,6 +237,8 @@ export async function planFromScreen(request: VisionRequest): Promise<VisionOutc
         actions: [],
         done: parsed.data.done,
         answer: parsed.data.answer,
+        navigate: parsed.data.navigate.trim(),
+        search: parsed.data.search.trim(),
       },
     };
   }
@@ -226,6 +265,8 @@ export async function planFromScreen(request: VisionRequest): Promise<VisionOutc
       actions: actions.data,
       done: parsed.data.done,
       answer: parsed.data.answer,
+      navigate: parsed.data.navigate.trim(),
+      search: parsed.data.search.trim(),
     },
   };
 }

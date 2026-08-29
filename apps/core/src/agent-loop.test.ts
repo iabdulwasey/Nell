@@ -87,16 +87,163 @@ describe("when a step fails on the page", () => {
     expect(attempts()).toBeGreaterThan(1);
   });
 
-  it("gives up once the page refuses everything", async () => {
+  /**
+   * A page that refuses everything is not a reason to stop — it is a reason to
+   * look at it. A click that times out three times usually means the element is
+   * not where the accessibility tree claims, which is exactly what a screenshot
+   * settles. Ending here threw away the second sense at the moment it was most
+   * likely to help.
+   */
+  it("escalates to looking rather than ending, once the page refuses everything", async () => {
     const { executor: exec, attempts } = executor(Number.POSITIVE_INFINITY);
+    const notes: string[] = [];
 
     const outcome = await runLoop(
       { provider, executor: exec, model: model(), modelId: "m" },
-      { scope, sessionId: "s", objective: "click the thing" }
+      {
+        scope,
+        sessionId: "s",
+        objective: "click the thing",
+        onDiagnostic: (note) => notes.push(note),
+      }
     );
 
+    expect(notes.join(" ")).toContain("switching to vision");
+    // It tried the structured path to exhaustion, then tried the other sense.
+    expect(attempts()).toBeGreaterThan(MAX_ACTION_FAILURES);
     expect(outcome.ok).toBe(false);
-    expect(attempts()).toBe(MAX_ACTION_FAILURES);
+  });
+
+  /**
+   * The bound that replaced the step count. A step limit asks "how much work is
+   * reasonable" and answers with a number chosen in advance; the question that
+   * matters is whether the task is getting anywhere. A real booking was cut off
+   * one step from checkout by a ceiling that had been guessed.
+   */
+  it("stops when nothing has changed for long enough, not at a step count", async () => {
+    /**
+     * Time advances once per turn, in the provider — not once per `clock()`
+     * call. The first version advanced on every read, and since the loop reads
+     * the clock several times a turn the elapsed time was whatever the code
+     * path happened to be, which is a test that measures its own implementation.
+     */
+    let now = 0;
+    const frozen = {
+      snapshot: async () => {
+        /**
+         * Three minutes a turn, so the stall lands before the vision escalation.
+         *
+         * On a slower page the escalation fires first and that is the intended
+         * order — going nowhere is a reason to look before it is a reason to
+         * stop. Here the point is the stall itself, so the turns are long enough
+         * to reach it while the unchanged counter is still short of its own
+         * threshold.
+         */
+        now += 3 * 60_000;
+        // Identical every time, so no turn ever counts as progress.
+        return {
+          url: "https://example.com/frozen",
+          title: "t",
+          nodes: [],
+          text: "",
+          truncated: false,
+        };
+      },
+    } as unknown as BrowserProvider;
+
+    const outcome = await runLoop(
+      {
+        provider: frozen,
+        executor: executor(0).executor,
+        model: model(),
+        modelId: "m",
+        clock: () => now,
+      },
+      { scope, sessionId: "s", objective: "wait forever", stallMs: 5 * 60_000 }
+    );
+
+    if (outcome.ok) throw new Error("expected failure");
+    expect(outcome.stuck).toBe(true);
+    expect(outcome.reason).toContain("without getting anywhere");
+    // Far fewer than the hard cap: it was time that ended this, not a counter.
+    expect(outcome.steps).toBeLessThan(20);
+  });
+
+  /** And the other half: a task that keeps moving is not cut off. */
+  it("keeps going while the page is changing", async () => {
+    let now = 0;
+    const moving = {
+      snapshot: async () => {
+        now += 60_000;
+        return {
+          // Different every turn, so every turn is progress.
+          url: `https://example.com/${String(now)}`,
+          title: "t",
+          nodes: [],
+          text: "",
+          truncated: false,
+        };
+      },
+    } as unknown as BrowserProvider;
+
+    const outcome = await runLoop(
+      {
+        provider: moving,
+        executor: executor(0).executor,
+        model: model(15),
+        modelId: "m",
+        clock: () => now,
+      },
+      { scope, sessionId: "s", objective: "a long booking", stallMs: 5 * 60_000 }
+    );
+
+    // Fifteen turns, well past the old ceiling of twelve, because every one of
+    // them changed the page.
+    expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+    expect(outcome.steps).toBeGreaterThan(12);
+  });
+
+  /**
+   * Changing is not progressing.
+   *
+   * Watched live: the agent bounced between a cinema's home page and its search
+   * results for nearly three minutes — home, search, home, search — and every
+   * turn "changed the page", so nothing ever looked stuck. It was moving and
+   * getting nowhere, which is what a loop is.
+   */
+  it("treats going round in circles as getting nowhere", async () => {
+    let now = 0;
+    let turn = 0;
+    const oscillating = {
+      snapshot: async () => {
+        now += 60_000;
+        turn += 1;
+        // Two pages, alternating: never the same twice in a row, never new.
+        return {
+          url: turn % 2 === 0 ? "https://example.com/a" : "https://example.com/b",
+          title: "t",
+          nodes: [],
+          text: "",
+          truncated: false,
+        };
+      },
+    } as unknown as BrowserProvider;
+
+    const outcome = await runLoop(
+      {
+        provider: oscillating,
+        executor: executor(0).executor,
+        model: model(),
+        modelId: "m",
+        clock: () => now,
+      },
+      { scope, sessionId: "s", objective: "go in circles", stallMs: 5 * 60_000 }
+    );
+
+    if (outcome.ok) throw new Error("expected failure");
+    expect(outcome.stuck).toBe(true);
+    // Stopped on time, not on a step count — and long before the hard cap.
+    expect(outcome.steps).toBeLessThan(12);
   });
 
   /** The complaint that started this. */

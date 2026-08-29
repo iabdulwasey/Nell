@@ -127,6 +127,54 @@ describe("what comes back", () => {
     }
   });
 
+  /**
+   * The looking sense has no address bar to click — a headless browser renders
+   * the page, not the browser chrome. Without a way out it is stranded on
+   * whatever page it inherited, which is exactly what happened: eight turns
+   * spent clicking where an address bar would be, on a page it had already
+   * given up on.
+   */
+  it("can leave the page it is on", async () => {
+    const outcome = await planFromScreen({
+      ...base,
+      provider: answering({
+        reasoning: "Opening the cinema's own site.",
+        actions: [],
+        done: false,
+        answer: "",
+        navigate: "https://example.com/showtimes",
+        search: "",
+      }),
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.plan.navigate).toBe("https://example.com/showtimes");
+      expect(outcome.plan.done).toBe(false);
+    }
+  });
+
+  it("can search from the looking sense too", async () => {
+    const outcome = await planFromScreen({
+      ...base,
+      provider: answering({
+        reasoning: "Finding the cinema's site.",
+        actions: [],
+        done: false,
+        answer: "",
+        navigate: "",
+        search: "berkeley cinema spider-man showtimes",
+      }),
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.plan.search).toContain("berkeley");
+  });
+
+  it("tells the model there is no browser chrome to click", () => {
+    expect(VISION_PROMPT).toContain("no address bar");
+  });
+
   it("treats a provider failure as a value rather than throwing", async () => {
     const down = {
       name: "stub",

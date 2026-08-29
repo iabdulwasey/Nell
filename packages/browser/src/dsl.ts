@@ -47,19 +47,20 @@ export const targetSchema = z.union([
       .min(1)
       .max(500)
       /**
-       * A snapshot ref is not a CSS selector.
+       * Every shape a ref has ever been mistaken for a selector in.
        *
-       * Refs look like `1:e3`, and page listings used to render them bracketed,
-       * so a model would send `{by: "css", selector: "[1:e3]"}` — which Chromium
-       * rejects as invalid CSS, ending the task with a `querySelectorAll`
-       * SyntaxError from deep inside Playwright. Caught here instead, with a
-       * sentence naming the right addressing mode, because the model can act on
-       * that and cannot act on a parser error.
+       * `[1:e3]` came first — page listings rendered refs bracketed, which is CSS
+       * attribute syntax, so the model pasted them into `css` and Chromium threw
+       * a `querySelectorAll` SyntaxError. Rendering them as `ref=1:e3` fixed that
+       * and walked straight into the next one: `engine=value` is *Playwright's*
+       * selector syntax, so the same paste now failed with `Unknown engine
+       * "ref"`.
        *
-       * The listing no longer invites the mistake; this stays because the cost
-       * of the check is nothing and the cost of the confusion was a whole task.
+       * The lesson is that a ref will be copied into this field whatever it
+       * looks like, so the check covers the identifier in any wrapping rather
+       * than the notation of the day.
        */
-      .refine((selector) => !/^\[?\d+:e\d+\]?$/u.test(selector.trim()), {
+      .refine((selector) => !/^(?:ref\s*=\s*)?\[?\s*\d+:e\d+\s*\]?$/iu.test(selector.trim()), {
         message: 'That is a snapshot ref, not a CSS selector — use {"by":"ref","ref":"..."}.',
       }),
   }),
