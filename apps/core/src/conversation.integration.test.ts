@@ -164,6 +164,16 @@ describeDb("the budget", () => {
     const scope = await workspace();
     await say(scope, "user", "x".repeat(20_000));
 
+    /**
+     * The write is asserted separately from the read.
+     *
+     * This failed once in CI and passed everywhere else, and the assertion it
+     * failed on — "one turn came back" — could not say whether nothing was
+     * written or nothing was recalled. Two facts sharing one assertion is an
+     * intermittent failure nobody can diagnose from the log, so they are split.
+     */
+    expect(await withWorkspace(pool, scope, (client) => turnCount(client, scope))).toBe(1);
+
     const turns = await withWorkspace(pool, scope, (client) => recentTurns(client, scope, 100));
 
     expect(turns).toHaveLength(1);

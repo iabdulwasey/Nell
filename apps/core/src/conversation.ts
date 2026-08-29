@@ -135,7 +135,22 @@ export async function recentTurns(
 
   for (const row of rows) {
     const parsed = rowSchema.safeParse(row);
-    if (!parsed.success) continue;
+    /**
+     * A row that will not parse is a broken row, not an absent one.
+     *
+     * This used to `continue`, which is the same silent-skip that made the audit
+     * store restart its chain at sequence one: an unreadable row and no row are
+     * different facts sharing a code path, and the difference only shows up as
+     * "the conversation is empty" long after the cause. Throwing makes a bad row
+     * say so, and says which one.
+     */
+    if (!parsed.success) {
+      throw new Error(
+        `Unreadable message row for ${scope.workspaceId}: ${
+          parsed.error.issues[0]?.path.join(".") ?? "?"
+        } ${parsed.error.issues[0]?.message ?? ""}`
+      );
+    }
 
     const cost = approximateTokens(parsed.data.body);
     /**
