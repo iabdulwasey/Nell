@@ -18,7 +18,16 @@
  */
 
 import { BrowserExecutor } from "@nell/aegis";
-import { isBareReply, providerFor, type ModelProvider, type ProviderKeys } from "@nell/agent";
+import {
+  explainUnsupported,
+  isBareReply,
+  planWork,
+  providerFor,
+  unsupported,
+  type Capability,
+  type ModelProvider,
+  type ProviderKeys,
+} from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
 import type { SearchProvider } from "@nell/integrations";
 import { greeting } from "@nell/memory";
@@ -26,6 +35,7 @@ import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
 import { runLoop, type LoopOutcome } from "./agent-loop.js";
 import { withWorkspace } from "./db.js";
+import { answerAboutFiles, fetchAttachment, readableKind, type StoredFile } from "./documents.js";
 import { humanise } from "./failure.js";
 import { resolvePlace, reverseGeocode } from "./geocode.js";
 import { park, peek, unpark } from "./pending-task.js";
@@ -39,7 +49,14 @@ import {
 } from "./profile.js";
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
-import { pollOnce, replyToStranger, sendMessage, type InboundMessage } from "./telegram-poll.js";
+import { runPipeline } from "./pipeline.js";
+import {
+  pollOnce,
+  replyToStranger,
+  sendDocument,
+  sendMessage,
+  type InboundMessage,
+} from "./telegram-poll.js";
 import type { WorkspaceSessions } from "./workspace-session.js";
 
 export interface NellOptions {
@@ -67,6 +84,15 @@ export interface NellOptions {
    * on the way to the results rather than on the results.
    */
   readonly search?: SearchProvider;
+  /** Where files the user sends are kept. One directory per workspace. */
+  readonly fileRoot: string;
+  /**
+   * What this deployment can actually do.
+   *
+   * Image generation needs a key this install may not have, and a plan that
+   * needs one should say so rather than fail obscurely partway through.
+   */
+  readonly capabilities: ReadonlySet<Capability>;
   readonly keys: ProviderKeys;
   readonly modelId: string;
   readonly telegramToken: string;
@@ -82,6 +108,15 @@ export interface NellOptions {
  * network: the interesting behaviour is what happens to a message, not how it
  * arrived.
  */
+/**
+ * The last few files each workspace sent.
+ *
+ * In memory on purpose, and the limitation is real: a restart forgets them.
+ * A schema for something whose useful life is the next few messages would be
+ * the wrong trade, and this is small enough to replace when it stops being.
+ */
+const recent = new Map<string, StoredFile[]>();
+
 export interface Live {
   /** Drains what the user has said since the task started. */
   readonly steering?: () => readonly string[];
@@ -206,6 +241,45 @@ export async function handleMessage(
    * message. The coordinates become a place name because "17.38, 78.48" is not
    * something a cinema listing will match.
    */
+  /**
+   * A file, and then a question about it.
+   *
+   * Kept in memory rather than a table, and that is a real limitation: a
+   * restart forgets the resume. It is the right trade for now — the alternative
+   * is a schema for something whose useful life is the next few messages — and
+   * it is stated here rather than discovered later.
+   */
+  if (message.attachment) {
+    const stored = await fetchAttachment(scope, message.attachment, {
+      token: options.telegramToken,
+      root: options.fileRoot,
+    });
+
+    if (!stored) {
+      await reply("I couldn't download that file. Try sending it again?");
+      return undefined;
+    }
+
+    recent.set(scope.workspaceId, [...(recent.get(scope.workspaceId) ?? []).slice(-3), stored]);
+
+    const kind = readableKind(stored.mimeType, stored.name);
+    if (!kind) {
+      // Told, not silently accepted. A confident review of a file nobody could
+      // read is worse than being asked for a different format.
+      await reply(
+        `Got ${stored.name}, but I can't read that format — send it as a PDF, an image or plain text and I'll take a proper look.`
+      );
+      return undefined;
+    }
+
+    // A caption is the question. Without one, wait for it.
+    const asked = objective && !objective.startsWith("Sent ") ? objective : "";
+    if (!asked) {
+      await reply(`Got ${stored.name}. What would you like me to do with it?`);
+      return undefined;
+    }
+  }
+
   if (message.sharedLocation) {
     const place =
       (await reverseGeocode(message.sharedLocation.latitude, message.sharedLocation.longitude)) ??
@@ -369,41 +443,75 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
     readProfile(client, run.scope)
   );
 
-  let outcome: LoopOutcome;
-
   let sessionId: string | undefined;
+  let outcome: LoopOutcome;
+  const produced: { readonly path: string; readonly name: string }[] = [];
 
   try {
-    const session = await options.sessions.acquire(run.scope);
-    sessionId = session.id;
+    const files = recent.get(run.scope.workspaceId) ?? [];
 
-    outcome = await runLoop(
+    /**
+     * Decide what this needs before doing any of it.
+     *
+     * The layer that was missing. Every request used to become a browser task,
+     * because the browser worker was the only worker — so "read my resume and
+     * roast it" opened a page, and "what is the news" drove a search engine that
+     * captcha'd it. Both are model jobs; neither needs a browser.
+     */
+    const plan = await planWork({
+      provider: run.model,
+      model: options.modelId,
+      message: run.objective,
+      files: files.map((file) => file.name),
+    });
+
+    const missing = unsupported(plan.steps, options.capabilities);
+    if (missing.length > 0) {
+      await reply(explainUnsupported(missing));
+      return { ok: false, steps: 0, reason: explainUnsupported(missing) };
+    }
+
+    log(`  plan: ${plan.steps.map((step) => step.capability).join(" → ")}`);
+    await reply(plan.summary || "On it.");
+
+    const result = await runPipeline(
       {
-        provider: options.browser,
+        browser: options.browser,
         executor: options.executor,
         model: run.model,
         modelId: options.modelId,
         ...(options.search ? { search: options.search } : {}),
-      },
-      {
-        scope: run.scope,
-        sessionId: session.id,
-        objective: run.objective,
-        profile: profileForPrompt(profile, run.scope),
-        ...(run.live?.steering ? { steering: run.live.steering } : {}),
-        ...(run.live?.signal ? { signal: run.live.signal } : {}),
-        // Sent as they happen, so a slow task is visibly working rather than
-        // silently hung. Silence is what makes people ask again.
+        outputRoot: options.fileRoot,
         onStep: (note) => {
           log(`  ${note}`);
           void reply(note);
         },
-        // Vendor text, for the log only. Nothing here is ever sent.
         onDiagnostic: (note) => {
           log(`  ! ${note}`);
         },
-      }
+      },
+      {
+        scope: run.scope,
+        // A callback, so a plan that never browses never launches a browser —
+        // and most plans do not.
+        sessionId: async () => {
+          const session = await options.sessions.acquire(run.scope);
+          sessionId = session.id;
+          return session.id;
+        },
+        objective: run.objective,
+        files,
+        profile: profileForPrompt(profile, run.scope),
+        ...(run.live?.steering ? { steering: run.live.steering } : {}),
+        ...(run.live?.signal ? { signal: run.live.signal } : {}),
+      },
+      plan.steps
     );
+
+    produced.push(...result.files);
+    outcome = result.ok
+      ? { ok: true, steps: plan.steps.length, summary: plan.summary, answer: result.text }
+      : { ok: false, steps: plan.steps.length, reason: result.text };
   } catch (error) {
     // `error.message`, verbatim, whatever it happened to be. Someone who asked
     // for cinema times should not receive a stack frame.
@@ -411,10 +519,17 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
     log(`  ! task failed: ${failure.detail}`);
     outcome = { ok: false, steps: 0, reason: failure.message, detail: failure.detail };
   }
-  // No `finally` closing the browser: the session outlives the task on purpose,
-  // because the logins and cookies in it are what make the next task cheaper.
-  // It is closed on shutdown, or when the user asks for it to be destroyed —
-  // which is a deletion with a receipt, not cleanup.
+
+  // Files first: a document is the answer, and a paragraph about it read before
+  // it arrives is a paragraph about nothing.
+  for (const file of produced) {
+    await sendDocument({
+      token: options.telegramToken,
+      chatId: run.threadRef,
+      path: file.path,
+      name: file.name,
+    });
+  }
 
   await withWorkspace(options.pool, run.scope, async (client) => {
     await client.query(`UPDATE tasks SET status = $2, updated_at = now() WHERE id = $1`, [

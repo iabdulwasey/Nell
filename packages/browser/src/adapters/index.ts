@@ -6,6 +6,7 @@
  * layer and the eval harness all need the vocabulary without the driver.
  */
 
+export { renderPdf, type PdfOptions } from "./render-pdf.js";
 export { LocalBrowserProvider, type FileResolver, type LocalBrowserOptions } from "./local.js";
 
 export { isCurrentRef, refSelector, snapshotPage, REF_ATTRIBUTE } from "./snapshot.js";

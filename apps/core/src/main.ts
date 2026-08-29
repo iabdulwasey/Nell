@@ -13,6 +13,7 @@ import { keysFromEnv, providerFor } from "@nell/agent";
 import { LocalBrowserProvider } from "@nell/browser/adapters";
 import { accessScopeForUser } from "@nell/shared";
 import { anthropicSearchProvider } from "@nell/integrations";
+import type { Capability } from "@nell/agent";
 import { assertRlsEnforceable, createPool } from "./db.js";
 import { run } from "./nell.js";
 import { runTicker } from "./ticker.js";
@@ -58,6 +59,9 @@ await assertRlsEnforceable(pool);
  * Under the user's home rather than a temp directory, for the same reason.
  */
 const profileRoot = process.env["NELL_PROFILE_ROOT"] ?? join(homedir(), ".nell", "profiles");
+
+/** Where files the user sends are kept, one directory per workspace. */
+const fileRoot = process.env["NELL_FILE_ROOT"] ?? join(homedir(), ".nell", "files");
 
 const browser = new LocalBrowserProvider({
   headless: process.env["NELL_HEADED"] !== "1",
@@ -140,6 +144,17 @@ await run(
     knownSenders: new Map([[owner!, `tg-${owner!}`]]),
     sessions,
     executor,
+    fileRoot,
+    /**
+     * What this install can do.
+     *
+     * `image` is absent: generating pictures needs a key from a provider that
+     * makes them, and none is configured. A plan that asks for one is told so
+     * rather than failing partway through with nothing to show.
+     */
+    capabilities: new Set<Capability>(
+      search ? ["answer", "document", "search", "browse"] : ["answer", "document", "browse"]
+    ),
     ...(search ? { search } : {}),
     log: (line) => {
       console.log(line);

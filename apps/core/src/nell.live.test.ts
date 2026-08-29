@@ -13,10 +13,13 @@
  * with `pnpm --filter @nell/core-app test:live`.
  */
 
+import { mkdtempSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { BrowserExecutor } from "@nell/aegis";
-import { keysFromEnv } from "@nell/agent";
+import { keysFromEnv, type Capability } from "@nell/agent";
 import { chromiumAvailable, LocalBrowserProvider } from "@nell/browser/adapters";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -122,6 +125,8 @@ beforeAll(async () => {
     knownSenders: new Map([["111", "ada"]]),
     sessions,
     executor: new BrowserExecutor({ driver: browser }),
+    fileRoot: mkdtempSync(join(tmpdir(), "nell-files-")),
+    capabilities: new Set<Capability>(["answer", "document", "browse"]),
   };
 
   // The stub replaces the network for Telegram only; the model and the browser

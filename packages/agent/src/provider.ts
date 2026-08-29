@@ -38,6 +38,15 @@ export interface ModelMessage {
    * model keeps every other capability and loses only this one.
    */
   readonly screenshot?: string;
+  /**
+   * Files to reason about — a PDF, an image — as base64 with their media type.
+   *
+   * Separate from `screenshot`, which is the agent looking at its own browser.
+   * These are the user's documents, and the distinction matters at the provider:
+   * a screenshot is context the agent produced, a document is content the user
+   * supplied, and only one of those is something they can be asked about.
+   */
+  readonly documents?: readonly { readonly mediaType: string; readonly data: string }[];
 }
 
 export interface CompletionRequest {
@@ -127,15 +136,31 @@ export function anthropicProvider(apiKey: string, fetchImpl: typeof fetch = fetc
              * Anthropic's guidance, and it is not cosmetic: a model given the
              * question before the picture tends to answer from the question.
              */
-            content: message.screenshot
-              ? [
-                  {
-                    type: "image",
-                    source: { type: "base64", media_type: "image/png", data: message.screenshot },
-                  },
-                  { type: "text", text: message.content },
-                ]
-              : message.content,
+            content:
+              message.screenshot || message.documents?.length
+                ? [
+                    ...(message.screenshot
+                      ? [
+                          {
+                            type: "image",
+                            source: {
+                              type: "base64",
+                              media_type: "image/png",
+                              data: message.screenshot,
+                            },
+                          },
+                        ]
+                      : []),
+                    // PDFs are a document block, not an image: the model reads
+                    // the text and the layout rather than looking at a picture
+                    // of a page, and layout is most of what a resume is.
+                    ...(message.documents ?? []).map((doc) => ({
+                      type: doc.mediaType === "application/pdf" ? "document" : "image",
+                      source: { type: "base64", media_type: doc.mediaType, data: doc.data },
+                    })),
+                    { type: "text", text: message.content },
+                  ]
+                : message.content,
           })),
           tools: [
             {

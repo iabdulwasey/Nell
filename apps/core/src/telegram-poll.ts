@@ -29,6 +29,7 @@ import {
   type InboundEnvelope,
 } from "@nell/channels";
 import type { Provenance } from "@nell/shared";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 const updateSchema = z.object({
@@ -52,6 +53,30 @@ const updateSchema = z.object({
           address: z.string().optional(),
         })
         .optional(),
+      /**
+       * A file, and the words that came with it.
+       *
+       * Dropped entirely until now, and silently: the guard below required
+       * `text`, which a document message does not have — its words live in
+       * `caption`. A resume sent for review was discarded without a line in the
+       * log, and the follow-up "roast my resume" then ran as a browser task with
+       * no resume attached. The user got a failure and no hint that the file had
+       * never arrived, which is the worst version of this: it looked like the
+       * agent had read it and been useless.
+       */
+      caption: z.string().optional(),
+      document: z
+        .object({
+          file_id: z.string(),
+          file_name: z.string().optional(),
+          mime_type: z.string().optional(),
+          file_size: z.number().optional(),
+        })
+        .optional(),
+      /** Photos arrive as a ladder of sizes; the last is the largest. */
+      photo: z
+        .array(z.object({ file_id: z.string(), file_size: z.number().optional() }))
+        .optional(),
       chat: z.object({ id: z.union([z.number(), z.string()]) }),
       from: z.object({ id: z.union([z.number(), z.string()]) }).optional(),
     })
@@ -72,6 +97,15 @@ export interface InboundMessage {
   readonly idempotencyKey: string;
   /** Present when the user shared a place rather than typing one. */
   readonly sharedLocation?: SharedLocation;
+  /** Present when the user sent a file. Not yet downloaded — this is the handle. */
+  readonly attachment?: Attachment;
+}
+
+export interface Attachment {
+  readonly fileId: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly bytes: number;
 }
 
 export interface SharedLocation {
@@ -123,9 +157,11 @@ export async function pollOnce(
     nextOffset = Math.max(nextOffset, update.update_id + 1);
 
     const message = update.message;
-    // A shared pin arrives with no text at all, so requiring text would drop the
-    // single most useful message the user can send.
-    if (!message || (!message.text && !message.location)) continue;
+    // Text, a pin, or a file. Requiring text drops the two most useful things a
+    // person can send from a phone.
+    if (!message || (!message.text && !message.location && !message.document && !message.photo)) {
+      continue;
+    }
 
     const senderRef = String(message.from?.id ?? message.chat.id);
     const userId = options.knownSenders.get(senderRef);
@@ -137,7 +173,7 @@ export async function pollOnce(
       providerMessageId: `${String(message.chat.id)}:${String(message.message_id)}`,
       threadRef: String(message.chat.id),
       senderRef,
-      text: message.text ?? placeholderFor(message.venue),
+      text: message.text ?? message.caption ?? placeholderFor(message.venue, message.document),
       receivedAt: message.date * 1000,
     };
 
@@ -151,8 +187,26 @@ export async function pollOnce(
         }
       : undefined;
 
+    const photo = message.photo?.at(-1);
+    const attachment: Attachment | undefined = message.document
+      ? {
+          fileId: message.document.file_id,
+          name: message.document.file_name ?? "file",
+          mimeType: message.document.mime_type ?? "application/octet-stream",
+          bytes: message.document.file_size ?? 0,
+        }
+      : photo
+        ? {
+            fileId: photo.file_id,
+            name: "photo.jpg",
+            mimeType: "image/jpeg",
+            bytes: photo.file_size ?? 0,
+          }
+        : undefined;
+
     messages.push({
       envelope,
+      ...(attachment ? { attachment } : {}),
       ...(shared ? { sharedLocation: shared } : {}),
       // The load-bearing line in this file.
       provenance: userId ? "user" : "untrusted",
@@ -177,7 +231,11 @@ export async function pollOnce(
  * The envelope's `text` is what everything downstream reads, and a shared pin
  * has none — leaving it empty would make the message look like nothing arrived.
  */
-function placeholderFor(venue: { title?: string; address?: string } | undefined): string {
+function placeholderFor(
+  venue: { title?: string; address?: string } | undefined,
+  document: { file_name?: string } | undefined
+): string {
+  if (document) return document.file_name ? `Sent ${document.file_name}` : "Sent a file";
   const named = [venue?.title, venue?.address].filter(Boolean).join(", ");
   return named ? `Shared location: ${named}` : "Shared location";
 }
@@ -246,6 +304,34 @@ export async function sendMessage(options: SendOptions): Promise<boolean> {
   }
 
   return delivered;
+}
+
+/**
+ * Send a file back.
+ *
+ * Multipart rather than JSON, which is why it does not share `post` — Telegram
+ * takes uploads only as `multipart/form-data`, and the caption rides along so a
+ * document never arrives without a word about what it is.
+ */
+export async function sendDocument(options: {
+  readonly token: string;
+  readonly chatId: string;
+  readonly path: string;
+  readonly name: string;
+  readonly caption?: string;
+  readonly fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const form = new FormData();
+  form.append("chat_id", options.chatId);
+  if (options.caption) form.append("caption", options.caption.slice(0, 1000));
+  form.append("document", new Blob([readFileSync(options.path)]), options.name);
+
+  const response = await fetchImpl(`https://api.telegram.org/bot${options.token}/sendDocument`, {
+    method: "POST",
+    body: form,
+  });
+  return response.ok;
 }
 
 async function post(

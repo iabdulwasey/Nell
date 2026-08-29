@@ -9,6 +9,16 @@
  */
 
 export {
+  capabilitySchema,
+  explainUnsupported,
+  planWork,
+  unsupported,
+  type Capability,
+  type Dispatch,
+  type DispatchRequest,
+  type Step,
+} from "./dispatch.js";
+export {
   buildVisionSchema,
   planFromScreen,
   visionSchema,
