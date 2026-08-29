@@ -33,3 +33,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # Named separately from `pnpm check` so the verdict is visible in the log
+      # rather than buried in a package's test output. A reviewer should be able
+      # to see "all attacks refused" without opening a fold.
+      - name: Adversarial suite
+        run: pnpm attacks
