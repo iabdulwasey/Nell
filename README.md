@@ -29,6 +29,42 @@ background monitors ("tell me when a Nobu table opens"), and reaches you on
 whatever channel you use — with a permission layer in front of anything that
 spends money, sends a message, or touches a credential.
 
+## See it work
+
+<!--
+  HOW TO FILL THESE IN
+  --------------------
+  GitHub only plays video inline when the file is hosted on GitHub itself.
+  A link to Drive, Dropbox or a raw file in this repo will not play.
+
+    1. Open any issue or pull-request comment box on this repo
+       (https://github.com/iabdulwasey/Nell/issues/new).
+    2. Drag the .mp4 or .mov into the box and wait for the upload to finish.
+       GitHub replaces it with a URL like
+       https://github.com/user-attachments/assets/xxxxxxxx-xxxx-xxxx
+    3. Copy that URL. Close the issue box WITHOUT posting — the upload is
+       already permanent and does not need the comment.
+    4. Replace the placeholder URL below with it, on its own line.
+       A bare user-attachments URL on its own line renders as a player.
+
+  Keep each clip short and silent-friendly: most people watch a README video
+  muted, on the first pass, before they have read a word of the text.
+-->
+
+### Booking something, end to end
+
+<!-- Replace this line with the user-attachments URL for the first video. -->
+
+_Nell finds a showing, picks the seats, and stops at the approval — the purchase
+is the one thing it will not do on its own._
+
+### Answering from the live web
+
+<!-- Replace this line with the user-attachments URL for the second video. -->
+
+_A question goes in on Telegram; Nell searches, reads the pages, and comes back
+with the answer rather than a description of where it got to._
+
 ## Why Nell instead of a closed assistant
 
 Closed personal agents ask you to hand over your passwords, your inbox, and your
