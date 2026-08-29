@@ -8,7 +8,10 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "generate": "drizzle-kit generate",
+    "migrate": "node scripts/migrate.mjs",
+    "emit-policies": "vitest run src/emit.test.ts"
   },
   "dependencies": {
     "@nell/shared": "workspace:*",
@@ -19,6 +22,7 @@
   "devDependencies": {
     "@types/node": "24.13.3",
     "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.6",
     "vitest": "4.1.10"
   }
 }

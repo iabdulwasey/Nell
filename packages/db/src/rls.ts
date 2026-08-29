@@ -68,13 +68,51 @@ CREATE POLICY ${table}_workspace_isolation ON ${table}
  * The audit log is append-only: no updates, no deletes, for anyone. Tampering
  * would break the hash chain anyway, but the database should not permit the
  * attempt in the first place.
+ *
+ * These MUST be `AS RESTRICTIVE`, and the first version of this was not.
+ *
+ * PostgreSQL row-level security policies are permissive by default, and multiple
+ * permissive policies are combined with OR. The workspace-isolation policy above
+ * is `FOR ALL`, so it already permits an UPDATE on a row in your own workspace —
+ * and a permissive `USING (false)` alongside it is simply one more branch of an
+ * OR that is already true. It reads exactly like a prohibition and enforces
+ * nothing.
+ *
+ * A restrictive policy is combined with AND instead, which is the only way to
+ * subtract a permission that another policy grants. Found by an integration test
+ * issuing a real UPDATE against a real database; every unit test on the hash
+ * chain passed throughout, because none of them could see the database.
+ *
+ * The restrictive policies are still not sufficient on their own, for a second
+ * reason that took a real UPDATE to notice: **row-level security filters, it
+ * does not raise.** `USING (false)` means no row is visible to update, so the
+ * statement succeeds having changed nothing and the caller is told it worked.
+ * For an audit log that is the wrong failure — code that tries to rewrite
+ * history should crash loudly, not quietly appear to succeed and leave someone
+ * believing an entry was corrected.
+ *
+ * Hence the trigger. It is the layer that turns "changed nothing" into an error,
+ * and it does not depend on getting policy combination rules right.
  */
 export function auditImmutabilitySql(): string {
   return `
 DROP POLICY IF EXISTS audit_log_no_update ON audit_log;
-CREATE POLICY audit_log_no_update ON audit_log FOR UPDATE USING (false);
+CREATE POLICY audit_log_no_update ON audit_log AS RESTRICTIVE FOR UPDATE USING (false);
 DROP POLICY IF EXISTS audit_log_no_delete ON audit_log;
-CREATE POLICY audit_log_no_delete ON audit_log FOR DELETE USING (false);`;
+CREATE POLICY audit_log_no_delete ON audit_log AS RESTRICTIVE FOR DELETE USING (false);
+
+-- The policies above make an UPDATE match nothing. This makes it fail.
+CREATE OR REPLACE FUNCTION nell_audit_is_append_only() RETURNS trigger AS $fn$
+BEGIN
+  RAISE EXCEPTION 'audit_log is append-only: % is not permitted', TG_OP
+    USING ERRCODE = 'restrict_violation';
+END;
+$fn$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS audit_log_append_only ON audit_log;
+CREATE TRIGGER audit_log_append_only
+  BEFORE UPDATE OR DELETE ON audit_log
+  FOR EACH STATEMENT EXECUTE FUNCTION nell_audit_is_append_only();`;
 }
 
 /** Statement binding a transaction to one workspace. Parameterized by caller. */
