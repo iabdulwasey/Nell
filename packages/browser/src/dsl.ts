@@ -105,6 +105,28 @@ export const actionSchema = z.discriminatedUnion("action", [
     target: targetSchema,
     value: z.string().max(300),
   }),
+  /**
+   * Put a stored credential into a field, without ever handling it.
+   *
+   * The model names an opaque item id and which part of it it wants. It does not
+   * see the username, it does not see the password, and there is no shape in
+   * this vocabulary that would let it supply one — `type` takes a literal and is
+   * the wrong action for a secret precisely because the model would have to know
+   * the secret to use it.
+   *
+   * What happens on the far side of the chokepoint: the origin is read from the
+   * live session, checked against the item's own allowlist, and only then is
+   * anything decrypted. The model's belief about which site it is on is not
+   * consulted, because that belief is exactly what a hostile page edits.
+   */
+  z.object({
+    action: z.literal("fill"),
+    /** Opaque id from the vault listing. Never a value. */
+    itemId: z.string().min(1).max(64),
+    /** Which part of the stored item — a login has a username and a password. */
+    field: z.enum(["username", "password", "totp", "number", "expiry", "name", "value"]),
+    target: targetSchema,
+  }),
   z.object({
     action: z.literal("scroll"),
     direction: z.enum(["up", "down"]),
@@ -211,6 +233,17 @@ export function operationClassOf(
     case "click":
       return "click";
     case "type":
+      return "type";
+    /**
+     * A fill is a type, as far as the taint machine is concerned.
+     *
+     * Classified rather than given a class of its own, because the taint machine
+     * asks "may this run on a session holding a credential" — and putting text
+     * into a field is that question regardless of where the text came from. What
+     * makes a fill different is everything that happens *before* it: the origin
+     * check and the decryption, neither of which is the taint machine's business.
+     */
+    case "fill":
       return "type";
     case "select":
       return "select";

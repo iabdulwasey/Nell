@@ -396,6 +396,18 @@ export class LocalBrowserProvider implements BrowserProvider {
         case "click-at":
           await page.mouse.click(action.x, action.y);
           break;
+        /**
+         * A driver cannot fill a credential, and that is deliberate.
+         *
+         * `fill` names a vault item; resolving it means reading the live origin,
+         * checking it against that item's allowlist and decrypting — all of
+         * which happen at the policy chokepoint, which is the only place that
+         * has the vault. A driver that could do it itself would be a way around
+         * the gate, so reaching here at all is a bug in the caller rather than
+         * something to handle politely.
+         */
+        case "fill":
+          throw new Error("A vault fill must be resolved by the policy layer, not the driver.");
         default: {
           // Exhaustiveness guard. Without this a newly declared action silently
           // no-ops and reports success — the agent would believe a file was
@@ -512,6 +524,68 @@ export class LocalBrowserProvider implements BrowserProvider {
       // Never throws: the gate's contract is that unreadable is not unusable.
       return "";
     }
+  }
+
+  /**
+   * Type a secret into a field.
+   *
+   * Reached only from the policy layer, after the origin has been checked and
+   * the value decrypted. The value is never logged, never returned, and never
+   * put anywhere a snapshot or a screenshot would find it — the selector is
+   * reported back so the taint machine can mask that field in every capture
+   * from here on.
+   *
+   * `fill` rather than keystrokes: a page listening for input events sees the
+   * same result, and typing character by character leaves the partial value in
+   * the DOM for as long as it takes, which is a window a screenshot can land in.
+   */
+  async fillSecret(
+    scope: AccessScope,
+    sessionId: string,
+    target: Target,
+    value: string
+  ): Promise<{ readonly selector: string }> {
+    const live = this.#require(scope, sessionId);
+    const locator = locate(live.page, target, live.snapshotVersion);
+
+    await locator.fill(value);
+
+    /**
+     * A CSS handle for the field, so captures can mask it.
+     *
+     * Derived from the ref where there is one, because that is stable for the
+     * life of the snapshot; otherwise the element is stamped so there is
+     * something to mask by. A filled field with no selector is a password
+     * visible in every screenshot that follows.
+     */
+    if (target.by === "ref") return { selector: refSelector(target.ref) };
+
+    /**
+     * Stamped through the focused element, in a string.
+     *
+     * This package deliberately has no DOM lib — nothing here runs in a browser
+     * — so a callback taking an `Element` cannot be typed. The string form of
+     * `evaluate` has the same effect and needs no types, which is the same
+     * reason the snapshot collector is a string.
+     *
+     * `fill` focuses the field before writing to it, so the field is whatever is
+     * focused. If focus has moved on, nothing is stamped and the caller gets no
+     * selector — which the caller must treat as "this cannot be masked" rather
+     * than as success.
+     */
+    const stamp = `nell-filled-${String(live.snapshotVersion)}-${String(this.#counter)}`;
+    const stamped = await live.page.evaluate(
+      `(() => {
+        const el = document.activeElement;
+        if (!el || el === document.body) return false;
+        el.setAttribute('data-nell-filled', ${JSON.stringify(stamp)});
+        return true;
+      })()`
+    );
+
+    if (stamped !== true) return { selector: "" };
+
+    return { selector: `[data-nell-filled="${stamp}"]` };
   }
 
   async currentOrigin(scope: AccessScope, sessionId: string): Promise<string> {

@@ -38,10 +38,22 @@ import {
 import {
   authorizeOperation,
   afterNavigation,
+  markFilled,
   scrubSecrets,
   UNTAINTED,
   type TaintState,
 } from "./taint.js";
+
+/**
+ * Stands in for a field that could not be marked.
+ *
+ * A selector nothing matches, on purpose. It cannot mask anything — it is not
+ * meant to — but it keeps the session tainted and the filled-selector list
+ * non-empty, so every downstream check that asks "is there a secret on this
+ * page" still says yes. Silently recording no selector would leave the session
+ * looking clean while a password sat in a field.
+ */
+const UNMASKABLE = "[data-nell-filled='unknown']";
 
 /**
  * What the executor needs a browser to do. Deliberately narrower than the full
@@ -72,6 +84,21 @@ export interface SessionDriver {
   currentOrigin(scope: AccessScope, sessionId: string): Promise<string>;
 
   /**
+   * Type a secret into a field, after this layer has decided it may.
+   *
+   * Returns a selector for the field so captures can mask it from here on. An
+   * empty selector means the field could not be marked, and the caller must
+   * treat that as "this cannot be masked" — a filled password with nothing to
+   * mask is one that appears in every screenshot afterwards.
+   */
+  fillSecret(
+    scope: AccessScope,
+    sessionId: string,
+    target: Target,
+    value: string
+  ): Promise<{ readonly selector: string }>;
+
+  /**
    * The visible label of what a click would hit.
    *
    * Required, not optional. An optional method here would be a gate any adapter
@@ -95,6 +122,31 @@ export interface SessionDriver {
           readonly y: number;
         }
   ): Promise<string>;
+}
+
+/**
+ * Where stored credentials come from.
+ *
+ * A port rather than a dependency: the vault lives in the application, this
+ * package is policy, and inverting that would make the security layer depend on
+ * the thing it is guarding.
+ *
+ * The contract is the whole point. `reveal` is given the origin the browser is
+ * **actually** on — read from the live session by this file, never supplied by a
+ * caller and never by the model — and it must refuse unless the item's own
+ * allowlist contains it. FreeInstinct let the model name the origin it expected,
+ * which turns an allowlist into a suggestion: a page that persuades the agent it
+ * is the bank is handed the bank's password.
+ */
+export interface SecretSource {
+  reveal(
+    scope: AccessScope,
+    itemId: string,
+    actualOrigin: string,
+    field: string
+  ): Promise<
+    { readonly ok: true; readonly value: string } | { readonly ok: false; readonly reason: string }
+  >;
 }
 
 export interface DriverOptions {
@@ -150,6 +202,14 @@ export interface ExecutorOptions {
    * path, never by the model.
    */
   readonly secretValues?: () => readonly string[];
+  /**
+   * The vault, if this deployment has one.
+   *
+   * Absent means a `fill` action is refused rather than ignored: an agent that
+   * silently skips filling a password reports success on a login it never
+   * completed, and then acts as though it were signed in.
+   */
+  readonly secrets?: SecretSource;
 }
 
 /**
@@ -167,10 +227,21 @@ export class BrowserExecutor {
   readonly #taint = new Map<string, TaintState>();
   readonly #control = new Map<string, ControlState>();
 
+  readonly #secrets: SecretSource | undefined;
+  /**
+   * Values filled this session, so extracted text can be scrubbed of them.
+   *
+   * Held here rather than asked of the vault again: re-reading a secret to check
+   * whether it leaked would mean decrypting it on a path that has nothing to do
+   * with filling it, which is one more place it exists in memory.
+   */
+  readonly #filled = new Map<string, string[]>();
+
   constructor(options: ExecutorOptions) {
     this.#driver = options.driver;
     this.#audit = options.audit;
     this.#now = options.now ?? (() => new Date());
+    this.#secrets = options.secrets;
     this.#secretValues = options.secretValues ?? (() => []);
   }
 
@@ -251,6 +322,92 @@ export class BrowserExecutor {
   /** Withdraw an approval that was never used. */
   revokeSpend(sessionId: string): void {
     this.#approved.delete(sessionId);
+  }
+
+  /**
+   * Resolve every `fill` in a batch, and hand back what is left to run.
+   *
+   * The order inside is the security property, and it is worth reading as an
+   * order rather than as a list:
+   *
+   *   1. the origin is read from the **live session**, not from the action, not
+   *      from the model, not from a caller's belief about where it is;
+   *   2. the vault refuses unless that origin is on the item's own allowlist;
+   *   3. only then is anything decrypted;
+   *   4. the value goes straight to the driver and nowhere else;
+   *   5. the session is tainted before the next action runs, so the very next
+   *      screenshot is already masked.
+   *
+   * Step 3 after step 2 matters more than it looks: decrypting first and
+   * checking afterwards puts a plaintext password in memory on a path that was
+   * about to be refused, and every accident downstream starts there.
+   */
+  async #fillSecrets(
+    scope: AccessScope,
+    sessionId: string,
+    actions: readonly BrowserAction[],
+    taint: TaintState
+  ): Promise<
+    | { readonly ok: true; readonly taint: TaintState; readonly rest: readonly BrowserAction[] }
+    | { readonly ok: false; readonly reason: string; readonly refusedAt: number }
+  > {
+    if (!this.#secrets) {
+      return {
+        ok: false,
+        refusedAt: actions.findIndex((action) => action.action === "fill"),
+        reason: "No vault is configured, so I have no saved credentials to use.",
+      };
+    }
+
+    let next = taint;
+    const rest: BrowserAction[] = [];
+
+    for (const [index, action] of actions.entries()) {
+      if (action.action !== "fill") {
+        rest.push(action);
+        continue;
+      }
+
+      // Read from the session every time, because a page can navigate between
+      // one action and the next.
+      const origin = await this.#driver.currentOrigin(scope, sessionId);
+      const revealed = await this.#secrets.reveal(scope, action.itemId, origin, action.field);
+
+      if (!revealed.ok) return { ok: false, reason: revealed.reason, refusedAt: index };
+
+      const { selector } = await this.#driver.fillSecret(
+        scope,
+        sessionId,
+        action.target,
+        revealed.value
+      );
+
+      /**
+       * A field that could not be marked is a field that cannot be masked.
+       *
+       * The session is tainted regardless — the secret is on the page either
+       * way — but captures are refused rather than taken unmasked, because a
+       * screenshot with a visible password is worse than no screenshot.
+       */
+      next = markFilled(next, origin, [selector || UNMASKABLE]);
+
+      const values = this.#filled.get(sessionId) ?? [];
+      values.push(revealed.value);
+      this.#filled.set(sessionId, values);
+
+      const filled: AuditAction = "vault.fill";
+      await this.#audit?.record({
+        workspaceId: scope.workspaceId,
+        action: filled,
+        subject: sessionId,
+        // The item and the place it went, never the value. An audit log that
+        // records secrets is a second copy of the vault with no encryption.
+        detail: { itemId: action.itemId, field: action.field, origin },
+        at: this.#now().toISOString(),
+      });
+    }
+
+    return { ok: true, taint: next, rest };
   }
 
   /**
@@ -390,21 +547,65 @@ export class BrowserExecutor {
       return { ok: false, reason: spend, refusedAt: 0, taint, needsApproval: true };
     }
 
+    /**
+     * Credentials go in before the rest of the batch, and never through it.
+     *
+     * A `fill` is removed from the actions the driver is given, because the
+     * driver has no vault and must not be able to resolve one — a driver that
+     * could would be a route around everything below. What it gets is a value
+     * this layer has already decided may exist on this page.
+     *
+     * Done before the batch rather than in the middle of it for the same reason
+     * the batch is authorised whole: a login half-filled is a state nobody can
+     * reason about.
+     */
+    let live = taint;
+    let remaining = request;
+
+    if (request.kind === "targeted" && request.actions.some((a) => a.action === "fill")) {
+      const outcome = await this.#fillSecrets(scope, sessionId, request.actions, live);
+      if (!outcome.ok) {
+        await this.#deny(scope, sessionId, "type", outcome.reason);
+        return { ok: false, reason: outcome.reason, refusedAt: outcome.refusedAt, taint: live };
+      }
+
+      live = outcome.taint;
+      this.#taint.set(sessionId, live);
+      remaining = { kind: "targeted", actions: outcome.rest };
+
+      // Nothing else was asked for, so the fill was the whole batch.
+      if (outcome.rest.length === 0) {
+        return {
+          ok: true,
+          result: { currentOrigin: await this.#driver.currentOrigin(scope, sessionId) },
+          taint: live,
+        };
+      }
+    }
+
     // Masking is derived from live taint, never from a caller's argument, so a
     // capture cannot be taken unmasked by omission.
-    const options: DriverOptions = { maskSelectors: taint.filledSelectors };
+    const options: DriverOptions = { maskSelectors: live.filledSelectors };
 
     const result =
-      request.kind === "targeted"
-        ? await this.#driver.perform(scope, sessionId, request.actions, options)
-        : await this.#driver.performComputer(scope, sessionId, request.actions, options);
+      remaining.kind === "targeted"
+        ? await this.#driver.perform(scope, sessionId, remaining.actions, options)
+        : await this.#driver.performComputer(scope, sessionId, remaining.actions, options);
 
-    // Belt and braces behind the blocked read paths: even if a secret reaches
-    // page text through some route we did not anticipate, it is replaced before
-    // the model sees it.
-    const scrubbed = taint.tainted ? this.#scrub(result) : result;
+    /**
+     * Belt and braces behind the blocked read paths: even if a secret reaches
+     * page text through some route we did not anticipate, it is replaced before
+     * the model sees it.
+     *
+     * `live`, not `taint` — the batch may have just filled a credential, and
+     * these two lines used the value from before it. Caught by a test where a
+     * fill was followed by a click: the fill alone stayed tainted, and adding
+     * one more action silently discarded it. Scrubbing and masking would then
+     * have been switched off on precisely the page holding a password.
+     */
+    const scrubbed = live.tainted ? this.#scrub(result) : result;
 
-    const next = afterNavigation(taint, result.currentOrigin);
+    const next = afterNavigation(live, result.currentOrigin);
     this.#taint.set(sessionId, next);
 
     return { ok: true, result: scrubbed, taint: next };

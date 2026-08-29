@@ -24,6 +24,20 @@ class FakeDriver implements SessionDriver {
   targeted: BrowserAction[][] = [];
   computer: ComputerAction[][] = [];
   extracted: Record<string, string> | undefined;
+  /** Everything actually typed as a secret, so a test can see what reached the page. */
+  filled: { target: unknown; value: string }[] = [];
+  /** Set empty to simulate a field that could not be marked for masking. */
+  fillSelector = "[data-nell-filled='x']";
+
+  async fillSecret(
+    _scope: unknown,
+    _sessionId: string,
+    target: unknown,
+    value: string
+  ): Promise<{ selector: string }> {
+    this.filled.push({ target, value });
+    return { selector: this.fillSelector };
+  }
 
   async perform(
     _scope: unknown,
@@ -582,5 +596,199 @@ describe("clicking something that spends money", () => {
 
     expect(outcome.ok).toBe(false);
     expect(driver.targeted).toHaveLength(0);
+  });
+});
+
+/**
+ * Filling a stored credential.
+ *
+ * The vault's crypto has been tested since Phase 0. What was never tested — or
+ * built — is the thing standing between a stored password and a page that wants
+ * it. So most of what follows is about refusing, because a vault that hands over
+ * a credential is ordinary and a vault that refuses correctly is the product.
+ */
+describe("filling a credential", () => {
+  /** A vault that answers for any origin, so the executor's own checks show. */
+  const alwaysReveals = {
+    reveal: async () => ({ ok: true as const, value: "hunter2" }),
+  };
+
+  it("types the secret and never routes it through the driver's action list", async () => {
+    const driver = new FakeDriver();
+    const executor = new BrowserExecutor({ driver, secrets: alwaysReveals });
+
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [
+        {
+          action: "fill",
+          itemId: "item-1",
+          field: "password",
+          target: { by: "text", text: "Password" },
+        },
+        { action: "click", target: { by: "text", text: "Sign in" } },
+      ],
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(driver.filled[0]?.value).toBe("hunter2");
+
+    /**
+     * The load-bearing assertion. The driver has no vault and must not be able
+     * to resolve one, so the batch it is handed contains the click and not the
+     * fill — a driver that could fill would be a route around every check above.
+     */
+    const handed = driver.targeted[0] ?? [];
+    expect(handed.map((action) => action.action)).toEqual(["click"]);
+    expect(JSON.stringify(handed)).not.toContain("hunter2");
+  });
+
+  /**
+   * The origin comes from the session, never from the action.
+   *
+   * FreeInstinct let the model say which origin it expected, which makes an
+   * allowlist a suggestion: a page that convinces the agent it is the bank is
+   * handed the bank's password.
+   */
+  it("asks the vault about the origin the browser is actually on", async () => {
+    const driver = new FakeDriver();
+    driver.origin = "https://evil.example";
+
+    const seen: string[] = [];
+    const executor = new BrowserExecutor({
+      driver,
+      secrets: {
+        reveal: async (_scope, _itemId, actualOrigin) => {
+          seen.push(actualOrigin);
+          return { ok: false as const, reason: "That site is not on this item's list." };
+        },
+      },
+    });
+
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [
+        {
+          action: "fill",
+          itemId: "item-1",
+          field: "password",
+          target: { by: "text", text: "Password" },
+        },
+      ],
+    });
+
+    expect(seen).toEqual(["https://evil.example"]);
+    expect(outcome.ok).toBe(false);
+    // Refused before anything was typed.
+    expect(driver.filled).toHaveLength(0);
+  });
+
+  /** A refused fill takes the rest of the batch with it. */
+  it("does not run the remaining actions when the vault refuses", async () => {
+    const driver = new FakeDriver();
+    const executor = new BrowserExecutor({
+      driver,
+      secrets: { reveal: async () => ({ ok: false as const, reason: "no" }) },
+    });
+
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [
+        { action: "fill", itemId: "item-1", field: "password", target: { by: "text", text: "P" } },
+        { action: "click", target: { by: "text", text: "Sign in" } },
+      ],
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(driver.targeted).toHaveLength(0);
+  });
+
+  /**
+   * Tainted before the next action runs, so the very next capture is masked
+   * rather than the one after it.
+   */
+  it("taints the session and masks the field from then on", async () => {
+    const driver = new FakeDriver();
+    const executor = new BrowserExecutor({ driver, secrets: alwaysReveals });
+
+    await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [
+        { action: "fill", itemId: "item-1", field: "password", target: { by: "text", text: "P" } },
+        { action: "click", target: { by: "text", text: "Sign in" } },
+      ],
+    });
+
+    expect(executor.taintOf("s1").tainted).toBe(true);
+    expect(driver.lastOptions?.maskSelectors).toContain("[data-nell-filled='x']");
+  });
+
+  /**
+   * A field that could not be marked is still a field with a password in it.
+   *
+   * Recording no selector would leave the session looking clean, which is the
+   * failure that ends with a screenshot of somebody's password.
+   */
+  it("still taints when the field could not be marked", async () => {
+    const driver = new FakeDriver();
+    driver.fillSelector = "";
+    const executor = new BrowserExecutor({ driver, secrets: alwaysReveals });
+
+    await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [
+        { action: "fill", itemId: "item-1", field: "password", target: { by: "text", text: "P" } },
+      ],
+    });
+
+    const taint = executor.taintOf("s1");
+    expect(taint.tainted).toBe(true);
+    expect(taint.filledSelectors).toHaveLength(1);
+  });
+
+  /**
+   * Refused rather than skipped. An agent that quietly ignores a fill reports
+   * success on a login it never completed, and then behaves as though signed in.
+   */
+  it("refuses when no vault is configured", async () => {
+    const driver = new FakeDriver();
+    const executor = new BrowserExecutor({ driver });
+
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [
+        { action: "fill", itemId: "item-1", field: "password", target: { by: "text", text: "P" } },
+      ],
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(driver.filled).toHaveLength(0);
+  });
+
+  /** The audit log records where a credential went, and never what it was. */
+  it("records the fill without recording the secret", async () => {
+    const driver = new FakeDriver();
+    const entries: AuditInput[] = [];
+    const executor = new BrowserExecutor({
+      driver,
+      secrets: alwaysReveals,
+      audit: {
+        record: (input) => {
+          entries.push(input);
+        },
+      },
+    });
+
+    await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [
+        { action: "fill", itemId: "item-1", field: "password", target: { by: "text", text: "P" } },
+      ],
+    });
+
+    const entry = entries.find((candidate) => candidate.action === "vault.fill");
+    expect(entry).toBeDefined();
+    expect(JSON.stringify(entry)).toContain("item-1");
+    expect(JSON.stringify(entry)).not.toContain("hunter2");
   });
 });
