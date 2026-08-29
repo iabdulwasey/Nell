@@ -134,8 +134,6 @@ export async function runPipeline(
           apiKey: deps.assistKey ?? "",
           model: deps.assistModel ?? "claude-sonnet-4-5",
           system: [
-            `Today is ${new Date().toDateString()}.`,
-            "",
             "Do the job properly and completely. Search the web when the answer depends on",
             "something current. Write and run code when a file has to be produced or data",
             "worked through — a real PDF, spreadsheet or chart, not a description of one.",

@@ -104,6 +104,54 @@ export const DEFAULT_TIMEOUT_MS = 60_000;
 const TOOL_NAME = "respond";
 
 /**
+ * Today's date, in the system prompt, on every call — without a caller having to
+ * remember.
+ *
+ * A model's training cutoff is in the past and it does not know that. Asked to
+ * plan a trip "in September" it will write 2024 or 2025 into a search query and
+ * be confidently wrong, and the failure is invisible: nothing errors, the
+ * results are simply for a different year.
+ *
+ * This was fixed once in the planner and stayed fixed only there. The dispatcher
+ * went months without it and, the first time it was asked to resolve a follow-up
+ * that said "3 September", produced "3 September 2025" — inventing a year while
+ * being told to invent nothing. Vision never had it either. Three prompt-building
+ * sites, one of them fixed, and no reason any future one would be.
+ *
+ * So it moves to the transport, which is the one place every model call in the
+ * project passes through. A caller cannot forget it because a caller is no
+ * longer involved.
+ *
+ * The clock is a parameter so tests are not a hostage to the day they run on.
+ * The date is host-local — a workspace timezone does not exist yet, and inventing
+ * one here would be worse than the honest limitation.
+ */
+export function stampToday(system: string, now: Date): string {
+  return `Today is ${now.toDateString()}.\n\n${system}`;
+}
+
+/**
+ * Wrap a provider so its system prompt always carries the date.
+ *
+ * Applied inside each adapter rather than at `providerFor`, so a provider built
+ * directly — by a test, or by an adapter added later — is grounded too. The
+ * guarantee should not depend on which door you came through.
+ *
+ * Placed first in the system prompt deliberately: it changes once a day, so a
+ * prompt cache keyed on the prefix is invalidated daily rather than per call.
+ */
+export function grounded(
+  provider: ModelProvider,
+  now: () => Date = () => new Date()
+): ModelProvider {
+  return {
+    name: provider.name,
+    complete: (request) =>
+      provider.complete({ ...request, system: stampToday(request.system, now()) }),
+  };
+}
+
+/**
  * Anthropic.
  *
  * Structured output via a forced tool call rather than by asking for JSON in
@@ -112,7 +160,7 @@ const TOOL_NAME = "respond";
  * model being stupid.
  */
 export function anthropicProvider(apiKey: string, fetchImpl: typeof fetch = fetch): ModelProvider {
-  return {
+  return grounded({
     name: "anthropic",
     async complete(request) {
       const model = stripPrefix(request.model);
@@ -188,7 +236,7 @@ export function anthropicProvider(apiKey: string, fetchImpl: typeof fetch = fetc
         },
       });
     },
-  };
+  });
 }
 
 const anthropicReplySchema = z.object({
@@ -211,7 +259,7 @@ export function openAiCompatibleProvider(
   apiKey: string,
   fetchImpl: typeof fetch = fetch
 ): ModelProvider {
-  return {
+  return grounded({
     name,
     async complete(request) {
       return call(fetchImpl, request, {
@@ -273,7 +321,7 @@ export function openAiCompatibleProvider(
         },
       });
     },
-  };
+  });
 }
 
 const openAiReplySchema = z.object({

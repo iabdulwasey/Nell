@@ -572,7 +572,6 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
        * it is where "book the second one" becomes something a worker can carry
        * out. Everything downstream takes an objective and needs no change.
        */
-      today: new Date().toDateString(),
       ...(conversation.length > 0 ? { conversation: renderConversation(conversation) } : {}),
       ...(profileForPrompt(profile, run.scope)
         ? { profile: profileForPrompt(profile, run.scope) }

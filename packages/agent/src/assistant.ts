@@ -30,6 +30,7 @@
  */
 
 import { z } from "zod";
+import { stampToday } from "./provider.js";
 
 /**
  * `Uint8Array` rather than `Buffer` throughout.
@@ -253,7 +254,14 @@ async function streamOnce(
          * successful.
          */
         max_tokens: request.maxTokens ?? 32_000,
-        system: request.system,
+        /**
+         * Stamped here rather than by the caller, for the same reason the
+         * providers stamp theirs: `assist` talks to Anthropic directly and
+         * never passes through `ModelProvider`, so it is its own transport and
+         * has to carry its own guarantee. A model that does not know the year
+         * searches for last year's answer and reports it confidently.
+         */
+        system: stampToday(request.system, new Date()),
         ...(tools.length > 0 ? { tools } : {}),
         messages,
         stream: true,

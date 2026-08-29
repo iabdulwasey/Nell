@@ -257,10 +257,9 @@ export interface PlanRequest {
   /**
    * Today's date.
    *
-   * Models carry a training cutoff and will write it into a query without
-   * noticing: asked to plan a trip in 2026 it searched for "September 2024
-   * itinerary", which is a different question with worse answers. Supplied
-   * rather than inferred, because there is nothing on a page to infer it from.
+   * @deprecated Every provider stamps the date into the system prompt now, so
+   * nothing needs to pass this. Kept only so a caller that still supplies one
+   * does not break; it is ignored.
    */
   readonly today?: string;
   /** What the last turn said was still missing, echoed back so it is not lost. */
@@ -464,8 +463,6 @@ function renderContext(request: PlanRequest): string {
 
   return [
     ...about,
-    `Today is ${request.today ?? new Date().toDateString()}.`,
-    "",
     `Objective: ${request.objective}`,
     ...since,
     ...remaining,

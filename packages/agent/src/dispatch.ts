@@ -199,12 +199,8 @@ export interface DispatchRequest {
   /**
    * Today's date.
    *
-   * The planner has had this for weeks and the dispatcher never did, which
-   * showed up the moment it started resolving follow-ups: a conversation
-   * mentioning "3 September" with no year became "3 September 2025" — the
-   * model's training cutoff, written in confidently while being told to invent
-   * nothing. A rewrite that fills in the wrong year is worse than one that
-   * leaves it out, because the year now looks like something the user said.
+   * @deprecated Every provider stamps the date into the system prompt now.
+   * Ignored, and kept only so an existing caller does not break.
    */
   readonly today?: string;
   readonly timeoutMs?: number;
@@ -240,8 +236,6 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
   const outcome: CompletionOutcome = await request.provider.complete({
     model: request.model,
     system: [
-      `Today is ${request.today ?? new Date().toDateString()}.`,
-      "",
       "Decide what a request needs, and choose the cheapest way that will actually work.",
       "",
       "Almost everything is `assist`: the model can answer, search the live web, and write",
