@@ -29,6 +29,9 @@ importers:
 
   apps/core:
     dependencies:
+      '@dbos-inc/dbos-sdk':
+        specifier: 4.27.6
+        version: 4.27.6
       '@hono/node-server':
         specifier: 1.15.0
         version: 1.15.0(hono@4.10.2)
@@ -68,12 +71,18 @@ importers:
       '@nell/vault':
         specifier: workspace:*
         version: link:../../packages/vault
+      drizzle-orm:
+        specifier: 0.44.7
+        version: 0.44.7(@types/pg@8.23.1)(pg@8.23.0)
       hono:
         specifier: 4.10.2
         version: 4.10.2
       pg:
         specifier: 8.23.0
         version: 8.23.0
+      playwright-core:
+        specifier: 1.56.0
+        version: 1.56.0
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -84,12 +93,15 @@ importers:
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
+      esbuild:
+        specifier: 0.25.12
+        version: 0.25.12
       tsx:
         specifier: 4.20.6
         version: 4.20.6
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.20.6)(yaml@2.9.0))
+        version: 4.1.10(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.25.12)(tsx@4.20.6)(yaml@2.9.0))
 
   apps/web:
     dependencies:

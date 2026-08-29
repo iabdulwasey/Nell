@@ -6,14 +6,17 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
+    "build": "node build.mjs",
     "dev": "tsx watch src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run --exclude '**/*.live.test.ts' --passWithNoTests",
-    "start": "tsx src/index.ts",
     "nell": "tsx src/main.ts",
-    "test:live": "RUN_LIVE_MODEL_TESTS=1 vitest run src/nell.live.test.ts"
+    "serve": "node dist/main.js",
+    "start": "tsx src/index.ts",
+    "test": "vitest run --exclude '**/*.live.test.ts' --passWithNoTests",
+    "test:live": "RUN_LIVE_MODEL_TESTS=1 vitest run src/nell.live.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@dbos-inc/dbos-sdk": "4.27.6",
     "@hono/node-server": "1.15.0",
     "@nell/aegis": "workspace:*",
     "@nell/agent": "workspace:*",
@@ -27,13 +30,16 @@
     "@nell/memory": "workspace:*",
     "@nell/shared": "workspace:*",
     "@nell/vault": "workspace:*",
+    "drizzle-orm": "0.44.7",
     "hono": "4.10.2",
     "pg": "8.23.0",
+    "playwright-core": "1.56.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
     "@types/pg": "8.23.1",
+    "esbuild": "0.25.12",
     "tsx": "4.20.6",
     "vitest": "4.1.10"
   }

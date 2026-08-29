@@ -63,6 +63,31 @@ Tenant isolation would be silently disabled.
 If you are running Postgres yourself rather than through compose, create the
 application role the same way — see `appRoleSql()` in `packages/db`.
 
+## Running a build rather than the source
+
+```bash
+pnpm build                 # bundles apps/core to apps/core/dist/main.js
+node apps/core/dist/main.js
+```
+
+Until recently this service ran through `tsx` straight from TypeScript, which is
+fine on a laptop and is not a deployment — it compiles on every boot, ships the
+whole toolchain, and offers nothing you can point `node` at.
+
+The `@nell/*` packages export TypeScript source deliberately, so a change is
+visible across a dozen packages without a build step. Bundling is what turns
+that into something `node` can execute. Third-party dependencies stay external,
+because several of them refuse to be bundled in ways that would look like our
+bug: `pg` loads a native driver when one is present, and `playwright-core`
+resolves browsers by walking its own package directory, which is not where it
+lands inside a bundle.
+
+One consequence worth knowing if you vendor dependencies: **the third-party
+dependencies of the bundled packages become dependencies of the artefact.**
+`playwright-core` belongs to `@nell/browser`, and once that code is inlined the
+output imports it directly — so it is declared in `apps/core` at the version the
+workspace already pins.
+
 ## Durable execution (optional, and worth turning on)
 
 Nell keeps workflow state in a **second database on the same server**, so a task
