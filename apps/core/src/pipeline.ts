@@ -122,6 +122,14 @@ export async function runPipeline(
             "something current. Write and run code when a file has to be produced or data",
             "worked through — a real PDF, spreadsheet or chart, not a description of one.",
             "",
+            "Save every file you make with a short descriptive filename — lucknow-street-food.pdf,",
+            "not output.pdf — and say that name in your reply. The person receiving it sees the",
+            "filename before they see anything else.",
+            "",
+            "If the code fails, fix it and run it again. Do not describe a document you did not",
+            "manage to produce: an answer that reads like the file is attached, when it is not,",
+            "is worse than saying the attempt failed.",
+            "",
             "You are writing a chat message: short paragraphs, bold for names and figures,",
             "'-' for lists. No tables, no headings, no code fences.",
             "",
@@ -139,8 +147,12 @@ export async function runPipeline(
           })),
           search: true,
           code: true,
+          // What was asked for, so a file the model forgot to name is still
+          // named after the thing it contains.
+          nameHint: request.objective,
           ...(deps.tools?.length ? { tools: deps.tools } : {}),
           ...(deps.onStep ? { onStep: deps.onStep } : {}),
+          ...(deps.onDiagnostic ? { onDiagnostic: deps.onDiagnostic } : {}),
         });
 
         if (!outcome.ok) {

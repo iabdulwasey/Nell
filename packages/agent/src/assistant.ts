@@ -92,6 +92,15 @@ export interface AssistRequest {
   readonly fetchImpl?: typeof fetch;
   /** Progress, so a long job is visibly working rather than silently hung. */
   readonly onStep?: (note: string) => void;
+  /** Technical detail for the operator's log. Never shown to the user. */
+  readonly onDiagnostic?: (note: string) => void;
+  /**
+   * What the user asked for, used to name a file the model did not name.
+   *
+   * The request is the best description of the document available without
+   * asking anybody, and it beats `nell-1.pdf` by a distance.
+   */
+  readonly nameHint?: string;
 }
 
 export type AssistOutcome =
@@ -233,7 +242,16 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
         },
         body: JSON.stringify({
           model: request.model,
-          max_tokens: request.maxTokens ?? 8192,
+          /**
+           * Generous, because the model writes the document *as code*.
+           *
+           * 8192 was fine for an answer and nowhere near a designed PDF: the
+           * whole text of the document is embedded in the Python that produces
+           * it, so a few pages of prose is a few thousand tokens of source
+           * before anything has run. It hit the ceiling mid-line, and the task
+           * came back looking successful.
+           */
+          max_tokens: request.maxTokens ?? 32_000,
           system: request.system,
           ...(tools.length > 0 ? { tools } : {}),
           messages,
@@ -279,10 +297,31 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
 
       // Files come back nested inside a tool result, one id per artefact.
       if (block.type === "code_execution_tool_result") {
-        const inner = (
-          block.content as { content?: { type?: string; file_id?: string }[] } | undefined
-        )?.content;
-        for (const item of inner ?? []) {
+        const result = block.content as
+          | {
+              content?: { type?: string; file_id?: string }[];
+              return_code?: number;
+              stderr?: string;
+            }
+          | undefined;
+
+        /**
+         * Say when the code failed, because otherwise nothing does.
+         *
+         * A run that errors produces no file and a model that then writes a
+         * description of the document it did not make — which reads, to the
+         * person waiting, exactly like a working assistant that forgot the
+         * attachment. Watched twice: the same request produced a PDF on one
+         * attempt and nothing on another, with no way to tell them apart from
+         * the outside.
+         */
+        if (result?.return_code !== undefined && result.return_code !== 0) {
+          request.onDiagnostic?.(
+            `code exited ${String(result.return_code)}: ${(result.stderr ?? "").slice(0, 300)}`
+          );
+        }
+
+        for (const item of result?.content ?? []) {
           if (item.type === "code_execution_output" && item.file_id) fileIds.push(item.file_id);
         }
       }
@@ -290,13 +329,55 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
 
     for (const [index, id] of fileIds.entries()) {
       const fetched = await download(request, id);
-      if (fetched) {
-        files.push({
-          name: nameFor(said.join(" "), fetched.mediaType, files.length + index),
-          mediaType: fetched.mediaType,
-          data: fetched.data,
-        });
+      if (!fetched) {
+        request.onDiagnostic?.(`could not download file ${id}`);
+        continue;
       }
+
+      files.push({
+        /**
+         * Named from everything it has said, not only from what it said last.
+         *
+         * The model usually names the file while it is working — before the
+         * final turn — so searching only the closing text found nothing and
+         * every document arrived as `nell-1.pdf`. A user handed a file with a
+         * name they did not choose and cannot recognise has been given a
+         * puzzle.
+         */
+        name: nameFor(
+          [...preamble, ...said].join(" "),
+          fetched.mediaType,
+          files.length + index,
+          request.nameHint
+        ),
+        mediaType: fetched.mediaType,
+        data: fetched.data,
+      });
+    }
+
+    /**
+     * Ran out of room to think, which is not the same as finishing.
+     *
+     * The failure this was found by: asked for a designed PDF, the model
+     * searched, began writing the document as Python, and hit the output limit
+     * *mid-source* — the reply ended on "Now I'll c". No code ran, no file
+     * existed, and it came back `ok: true` carrying a paragraph that reads like
+     * an assistant which merely forgot the attachment.
+     *
+     * A truncated turn that produced nothing is reported as a failure, because
+     * the alternative is confidently handing someone a description of a document
+     * that was never made.
+     */
+    if (parsed.data.stop_reason === "max_tokens") {
+      request.onDiagnostic?.("hit the output limit mid-answer");
+      if (files.length === 0) {
+        return {
+          ok: false,
+          reason: "ran out of room while working — the answer was cut off before anything finished",
+          retryable: true,
+        };
+      }
+      break;
     }
 
     // Nothing for us to run, so the model is finished.
@@ -362,12 +443,7 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
  * always says what it called the file, so the text is searched for one before
  * falling back. A user receiving `file_01K4H4.bin` has been handed a puzzle.
  */
-function nameFor(said: string, mediaType: string, index: number): string {
-  const mentioned = /([\w-]{1,60}\.(pdf|png|jpe?g|csv|xlsx?|docx?|txt|md|json|zip|pptx?))/iu.exec(
-    said
-  );
-  if (mentioned) return mentioned[1] as string;
-
+function nameFor(said: string, mediaType: string, index: number, hint?: string): string {
   const extension =
     {
       "application/pdf": "pdf",
@@ -379,5 +455,51 @@ function nameFor(said: string, mediaType: string, index: number): string {
       "application/zip": "zip",
     }[mediaType.split(";")[0] ?? ""] ?? "bin";
 
-  return `nell-${String(index + 1)}.${extension}`;
+  // What the model called it, if it said.
+  const mentioned = /([\w-]{1,60}\.(pdf|png|jpe?g|csv|xlsx?|docx?|txt|md|json|zip|pptx?))/iu.exec(
+    said
+  );
+  if (mentioned) return mentioned[1] as string;
+
+  /**
+   * Otherwise, named after what was asked for.
+   *
+   * `nell-1.pdf` tells the person who receives it nothing, and a folder of
+   * `nell-1`, `nell-2`, `nell-3` is worse than one file with a bad name. The
+   * request is the best description of the document available without asking
+   * anyone, so a document about Lucknow street food arrives as
+   * `lucknow-street-food.pdf`.
+   */
+  const slug = (hint ?? "")
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .split("-")
+    // Words that describe the asking rather than the thing.
+    .filter(
+      (word) =>
+        word.length > 2 &&
+        ![
+          "the",
+          "and",
+          "for",
+          "with",
+          "make",
+          "build",
+          "create",
+          "generate",
+          "please",
+          "pdf",
+          "file",
+          "document",
+          "well",
+          "perfectly",
+          "formatted",
+          "designed",
+        ].includes(word)
+    )
+    .slice(0, 5)
+    .join("-");
+
+  return slug ? `${slug}.${extension}` : `nell-${String(index + 1)}.${extension}`;
 }

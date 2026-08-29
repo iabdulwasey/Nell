@@ -62,6 +62,9 @@ importers:
       '@nell/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@nell/vault':
+        specifier: workspace:*
+        version: link:../../packages/vault
       hono:
         specifier: 4.10.2
         version: 4.10.2
