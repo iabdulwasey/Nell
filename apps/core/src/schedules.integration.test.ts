@@ -68,6 +68,11 @@ async function wipe() {
     await withWorkspace(pool, scope, async (client) => {
       await client.query("DELETE FROM monitor_reports");
       await client.query("DELETE FROM monitors");
+      // Re-created, because another suite truncates `workspaces CASCADE` and
+      // takes these with it — a foreign-key violation three files from its cause.
+      await client.query("INSERT INTO workspaces (id) VALUES ($1) ON CONFLICT DO NOTHING", [
+        scope.workspaceId,
+      ]);
     });
   }
 }

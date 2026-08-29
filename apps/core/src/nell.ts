@@ -68,9 +68,17 @@ export interface NellOptions {
  * network: the interesting behaviour is what happens to a message, not how it
  * arrived.
  */
+export interface Live {
+  /** Drains what the user has said since the task started. */
+  readonly steering?: () => readonly string[];
+  /** Aborts the task between steps. */
+  readonly signal?: AbortSignal;
+}
+
 export async function handleMessage(
   options: NellOptions,
-  message: InboundMessage
+  message: InboundMessage,
+  live: Live = {}
 ): Promise<LoopOutcome | undefined> {
   const log = options.log ?? (() => undefined);
   const reply = (text: string) =>
@@ -185,7 +193,7 @@ export async function handleMessage(
       })
     );
     await reply(`${place} — noted. I'll use that when you say "near me".`);
-    return resumeParked(options, message, scope, resolved.provider);
+    return resumeParked(options, message, scope, resolved.provider, live);
   }
 
   /**
@@ -209,7 +217,7 @@ export async function handleMessage(
         })
       );
       await reply(`${place} — noted. Carrying on.`);
-      return resumeParked(options, message, scope, resolved.provider);
+      return resumeParked(options, message, scope, resolved.provider, live);
     }
   }
 
@@ -270,6 +278,7 @@ export async function handleMessage(
     objective,
     threadRef: message.envelope.threadRef,
     model: resolved.provider,
+    live,
   });
 }
 
@@ -279,6 +288,7 @@ interface TaskRun {
   readonly objective: string;
   readonly threadRef: string;
   readonly model: ModelProvider;
+  readonly live?: Live;
 }
 
 /**
@@ -334,6 +344,8 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         sessionId: session.id,
         objective: run.objective,
         profile: profileForPrompt(profile, run.scope),
+        ...(run.live?.steering ? { steering: run.live.steering } : {}),
+        ...(run.live?.signal ? { signal: run.live.signal } : {}),
         // Sent as they happen, so a slow task is visibly working rather than
         // silently hung. Silence is what makes people ask again.
         onStep: (note) => {
@@ -393,7 +405,8 @@ async function resumeParked(
   options: NellOptions,
   message: InboundMessage,
   scope: AccessScope,
-  model: ModelProvider
+  model: ModelProvider,
+  live?: Live
 ): Promise<LoopOutcome | undefined> {
   const parked = await withWorkspace(options.pool, scope, (client) => peek(client, scope));
   if (!parked) return undefined;
@@ -406,6 +419,7 @@ async function resumeParked(
     objective: parked.objective,
     threadRef: parked.threadRef ?? message.envelope.threadRef,
     model,
+    ...(live ? { live } : {}),
   });
 }
 
@@ -418,42 +432,125 @@ async function ensureWorkspace(options: NellOptions, scope: AccessScope): Promis
 }
 
 /**
- * Poll Telegram until stopped.
+ * A task that is currently running, and the way to talk to it.
  *
- * The offset is advanced only after a batch is handled, so a crash mid-task
- * redelivers rather than loses. For a channel where a lost message is a task
- * that never happened, redelivering twice is the better failure — and the task
- * id is the message id, so the second delivery updates the same row rather than
- * starting a second task.
+ * Held so an inbound message can reach work already in progress rather than
+ * queueing behind it — which is the difference between an assistant and a form
+ * submission.
+ */
+interface Running {
+  readonly workspaceId: string;
+  /** Drained by the loop at the start of each turn. */
+  readonly steering: string[];
+  readonly abort: AbortController;
+}
+
+/**
+ * Read and work at the same time.
+ *
+ * The poll and the worker are separate loops on purpose. Awaiting a task before
+ * polling again — which is what this used to do — means Nell does not even
+ * *fetch* a message while it is busy, and a task now runs for minutes. Watching
+ * it head somewhere wrong with no way to say "not there" was the most obvious
+ * thing missing, and the cause was one `await` in the wrong place.
+ *
+ * The offset still advances only after a batch has been taken in, so a crash
+ * redelivers rather than loses. A redelivered message updates the same task row,
+ * because the task id is the message id.
  */
 export async function run(options: NellOptions, signal?: AbortSignal): Promise<void> {
   const log = options.log ?? (() => undefined);
-  let offset = 0;
+  const inbox: InboundMessage[] = [];
+  let running: Running | undefined;
 
   log("listening on Telegram");
 
+  const polling = (async () => {
+    let offset = 0;
+
+    while (!signal?.aborted) {
+      let batch;
+      try {
+        batch = await pollOnce(
+          { token: options.telegramToken, knownSenders: options.knownSenders },
+          offset
+        );
+      } catch {
+        // A network blip should not end the process. Wait and try again.
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      for (const message of batch.messages) {
+        const text = message.envelope.text.trim();
+        log(`> ${text.slice(0, 80)}`);
+
+        const mine =
+          running !== undefined &&
+          message.userId !== undefined &&
+          accessScopeForUser(message.userId).workspaceId === running.workspaceId;
+
+        if (mine && running) {
+          /**
+           * "Stop" is unambiguous and immediate.
+           *
+           * Every other message is handed to the task as a correction, but this
+           * one cannot wait for the next turn to be considered — the whole point
+           * of saying it is that something is going wrong now.
+           */
+          if (/^(stop|cancel|abort|never ?mind)\b/iu.test(text)) {
+            running.abort.abort();
+            log("  ! stopped by user");
+            await sendMessage({
+              token: options.telegramToken,
+              chatId: message.envelope.threadRef,
+              text: "Stopping.",
+            });
+            continue;
+          }
+
+          running.steering.push(text);
+          log("  ! steering the running task");
+          continue;
+        }
+
+        inbox.push(message);
+      }
+
+      offset = batch.nextOffset;
+    }
+  })();
+
+  /**
+   * One task at a time, deliberately.
+   *
+   * A workspace has one browser, so two tasks would be two agents fighting over
+   * one page. Queueing is the honest shape; the fix for a slow queue is the
+   * coordinator, not concurrency bolted on here.
+   */
   while (!signal?.aborted) {
-    let batch;
-    try {
-      batch = await pollOnce(
-        { token: options.telegramToken, knownSenders: options.knownSenders },
-        offset
-      );
-    } catch {
-      // A network blip should not end the process. Wait and try again.
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+    const message = inbox.shift();
+    if (!message) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
       continue;
     }
 
-    for (const message of batch.messages) {
-      if (signal?.aborted) break;
-      log(`> ${message.envelope.text.slice(0, 80)}`);
-      await handleMessage(options, message).catch((error: unknown) => {
-        log(`  failed: ${error instanceof Error ? error.message : "unknown"}`);
-        return undefined;
-      });
-    }
+    const abort = new AbortController();
+    const steering: string[] = [];
+    running = message.userId
+      ? { workspaceId: accessScopeForUser(message.userId).workspaceId, steering, abort }
+      : undefined;
 
-    offset = batch.nextOffset;
+    await handleMessage(options, message, {
+      steering: () => steering.splice(0, steering.length),
+      signal: abort.signal,
+    }).catch((error: unknown) => {
+      log(`  failed: ${error instanceof Error ? error.message : "unknown"}`);
+      return undefined;
+    });
+
+    running = undefined;
   }
+
+  await polling;
 }

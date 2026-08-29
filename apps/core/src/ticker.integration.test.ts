@@ -78,10 +78,22 @@ async function seed(at = NOON, everyMinutes = 1440) {
   );
 }
 
+/**
+ * Reset, and re-create the workspace.
+ *
+ * Another suite in the same run truncates `workspaces CASCADE`, which takes this
+ * one's rows with it — so a workspace created once in `beforeAll` is gone by the
+ * time a later test needs it, and the failure is a foreign-key violation three
+ * files away from its cause. Making setup idempotent is cheaper than making
+ * suites agree about who owns the database.
+ */
 async function wipe() {
   await withWorkspace(pool, ada, async (client) => {
     await client.query("DELETE FROM monitor_reports");
     await client.query("DELETE FROM monitors");
+    await client.query("INSERT INTO workspaces (id) VALUES ($1) ON CONFLICT DO NOTHING", [
+      ada.workspaceId,
+    ]);
   });
 }
 

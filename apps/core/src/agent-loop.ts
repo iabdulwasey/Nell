@@ -61,6 +61,10 @@ export interface LoopRequest {
   readonly onStep?: (note: string) => void;
   /** Technical detail for the operator's log. Never reaches the user. */
   readonly onDiagnostic?: (note: string) => void;
+  /** Drains anything the user has said since the task started. */
+  readonly steering?: () => readonly string[];
+  /** Aborts the task between steps, because the user asked it to stop. */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -127,6 +131,15 @@ export const MAX_BAD_PLANS = 3;
  * a partial answer is what the user would rather have.
  */
 export const MAX_FINISH_REFUSALS = 3;
+
+/**
+ * Consecutive failures to read the page before giving up on the session.
+ *
+ * Higher than the action limit because the common cause is transient — a page
+ * mid-navigation, which the next look resolves. Past that it is a browser that
+ * has gone, and no amount of waiting brings one back.
+ */
+export const MAX_UNREADABLE = 4;
 
 export type LoopOutcome =
   /**
@@ -203,6 +216,10 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
   const badPlanCounter = { count: 0 };
   /** Parts of the request the last turn said were still open. */
   let outstanding: readonly string[] = [];
+  /** Things the user has said since. Trusted, and they amend the objective. */
+  const instructions: string[] = [];
+  /** Consecutive failures to read the page at all. Reset by any successful look. */
+  let unreadable = 0;
   /** Times the agent has been sent back to finish the job. */
   let finishRefusals = 0;
   /**
@@ -218,6 +235,39 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
   let looking = false;
 
   for (let step = 1; step <= cap; step += 1) {
+    if (request.signal?.aborted) {
+      return {
+        ok: false,
+        steps: step,
+        reason: partial ? `Stopped.\n\nWhat I had so far:\n\n${partial}` : "Stopped.",
+      };
+    }
+
+    /**
+     * What the user has said since this started.
+     *
+     * The difference between an assistant and a form submission. A task now runs
+     * for minutes, and watching it head somewhere wrong with no way to say "not
+     * there, try BookMyShow" or "it is 2026, not 2024" is the most obvious thing
+     * missing from a long task.
+     *
+     * Taken before the page is read, so a correction lands before another turn
+     * is spent going the wrong way. Kept apart from `history` because these are
+     * not a record of what was tried — they are the objective, amended, and the
+     * planner is told to treat them as outranking it.
+     *
+     * Trusted, unlike everything else that arrives mid-task: this came from the
+     * user, not from a page, which is exactly why it may redirect the objective
+     * when nothing on a page ever may.
+     */
+    const said = request.steering?.() ?? [];
+    if (said.length > 0) {
+      instructions.push(...said);
+      request.onDiagnostic?.(`steered: ${said.join(" | ")}`);
+      // A new instruction is new information, so the task has not stalled.
+      lastProgressAt = clock();
+    }
+
     /**
      * The real bound: five minutes of getting nowhere.
      *
@@ -251,13 +301,26 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     } catch (error) {
       const failure = humanise(error);
       request.onDiagnostic?.(`could not read the page: ${failure.detail}`);
-      consecutiveFailures += 1;
-      if (consecutiveFailures >= MAX_ACTION_FAILURES && looking) {
+      unreadable += 1;
+
+      /**
+       * Fatal after a few, and deliberately not escalated to looking.
+       *
+       * A single failure is a page mid-navigation and waiting fixes it. Several
+       * in a row means the session cannot be read at all, and vision is no
+       * escape from that — a screenshot comes from the same session. Continuing
+       * would sleep-and-retry until the stall timer fired five minutes later,
+       * which is a long time to spend on a browser that is already gone.
+       */
+      if (unreadable >= MAX_UNREADABLE) {
         return { ok: false, steps: step, reason: failure.message, detail: failure.detail };
       }
+
       await new Promise((resolve) => setTimeout(resolve, 1200));
       continue;
     }
+
+    unreadable = 0;
 
     /**
      * Stop at a wall rather than clicking at it.
@@ -350,6 +413,7 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
       history,
       findings,
       outstanding,
+      instructions,
       ...(request.profile ? { profile: request.profile } : {}),
     });
 

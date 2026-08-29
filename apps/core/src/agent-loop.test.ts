@@ -507,6 +507,94 @@ describe("when a step fails on the page", () => {
     expect(visionTurns).toBeGreaterThan(1);
   });
 
+  /**
+   * Being able to say "not there, try BookMyShow" or "it is 2026, not 2024"
+   * while a task is running. Without it a long task is a form submission: you
+   * watch it head somewhere wrong and wait for it to finish being wrong.
+   */
+  it("takes a correction mid-task and puts it above the objective", async () => {
+    const said = ["it is 2026, not 2024"];
+    let sawCorrection = false;
+
+    const listening = {
+      name: "stub",
+      complete: async (request: { messages: { content: string }[] }) => {
+        const prompt = request.messages[0]?.content ?? "";
+        if (prompt.includes("2026, not 2024")) {
+          sawCorrection = true;
+          // And it is framed as outranking the objective, not as trivia.
+          expect(prompt).toContain("outranks the objective");
+        }
+        return {
+          ok: true,
+          value: {
+            reasoning: "working",
+            actions: [],
+            done: sawCorrection,
+            answer: sawCorrection ? "done" : "",
+            search: "",
+            outstanding: [],
+          },
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    } as unknown as ModelProvider;
+
+    const outcome = await runLoop(
+      { provider, executor: executor(0).executor, model: listening, modelId: "m" },
+      {
+        scope,
+        sessionId: "s",
+        objective: "plan a trip",
+        // Delivered once, then drained — exactly as the running loop does it.
+        steering: () => said.splice(0, said.length),
+      }
+    );
+
+    expect(sawCorrection).toBe(true);
+    expect(outcome.ok).toBe(true);
+  });
+
+  /**
+   * "Stop" cannot wait for the next turn to be weighed up. The whole point of
+   * saying it is that something is going wrong now.
+   */
+  it("stops when told to, and keeps what it had", async () => {
+    const abort = new AbortController();
+    let turns = 0;
+
+    const working = {
+      name: "stub",
+      complete: async () => {
+        turns += 1;
+        if (turns === 2) abort.abort();
+        return {
+          ok: true,
+          value: {
+            reasoning: "still going",
+            actions: [{ action: "click", target: { by: "text", text: "Go" } }],
+            done: false,
+            answer: "half an answer",
+            search: "",
+            outstanding: [],
+          },
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    } as unknown as ModelProvider;
+
+    const outcome = await runLoop(
+      { provider, executor: executor(0).executor, model: working, modelId: "m" },
+      { scope, sessionId: "s", objective: "go forever", signal: abort.signal }
+    );
+
+    if (outcome.ok) throw new Error("expected it to stop");
+    expect(outcome.reason).toContain("Stopped");
+    // Work already done is not thrown away just because it was interrupted.
+    expect(outcome.reason).toContain("half an answer");
+    expect(turns).toBeLessThan(5);
+  });
+
   /** The complaint that started this. */
   it("never puts the driver's words in front of the user", async () => {
     const { executor: exec } = executor(Number.POSITIVE_INFINITY);

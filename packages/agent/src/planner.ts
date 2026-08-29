@@ -229,8 +229,23 @@ export interface PlanRequest {
   readonly snapshot: PageSnapshot;
   /** What has already been tried, so the model does not loop. */
   readonly history?: readonly string[];
+  /**
+   * Today's date.
+   *
+   * Models carry a training cutoff and will write it into a query without
+   * noticing: asked to plan a trip in 2026 it searched for "September 2024
+   * itinerary", which is a different question with worse answers. Supplied
+   * rather than inferred, because there is nothing on a page to infer it from.
+   */
+  readonly today?: string;
   /** What the last turn said was still missing, echoed back so it is not lost. */
   readonly outstanding?: readonly string[];
+  /**
+   * What the user has said since the task began. Trusted, and it outranks the
+   * original objective — a correction is the user changing their mind, which is
+   * theirs to do.
+   */
+  readonly instructions?: readonly string[];
   /**
    * Search results gathered this task. Kept separate from `history` because one
    * is the agent's own account of its work and the other is third-party text —
@@ -361,6 +376,23 @@ function renderContext(request: PlanRequest): string {
     ? ["About the user — their own words, and reliable:", request.profile.trim(), ""]
     : [];
 
+  /**
+   * Since the task began, in the user's own words.
+   *
+   * Placed after the objective and labelled as outranking it, because that is
+   * what a correction is: "it is 2026, not 2024" is not extra context, it is the
+   * objective being fixed, and a model that reads it as background will keep
+   * doing the wrong thing politely.
+   */
+  const since =
+    request.instructions && request.instructions.length > 0
+      ? [
+          "",
+          "The user has since said this — it outranks the objective above:",
+          ...request.instructions.map((line: string) => `- ${line}`),
+        ]
+      : [];
+
   const remaining =
     request.outstanding && request.outstanding.length > 0
       ? ["", "Still unanswered:", ...request.outstanding.map((item: string) => `- ${item}`)]
@@ -368,7 +400,10 @@ function renderContext(request: PlanRequest): string {
 
   return [
     ...about,
+    `Today is ${request.today ?? new Date().toDateString()}.`,
+    "",
     `Objective: ${request.objective}`,
+    ...since,
     ...remaining,
     ...history,
     ...found,
