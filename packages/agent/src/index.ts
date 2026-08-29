@@ -85,3 +85,31 @@ export {
   type CatalogSelection,
   type Provider,
 } from "./catalog.js";
+
+export {
+  anthropicProvider,
+  explainProviderProblem,
+  keysFromEnv,
+  openAiCompatibleProvider,
+  providerFor,
+  DEFAULT_TIMEOUT_MS,
+  type CompletionOutcome,
+  type CompletionRequest,
+  type ModelMessage,
+  type ModelProvider,
+  type ProviderKeys,
+  type ProviderProblem,
+  type ProviderResolution,
+  type TokenUsage,
+} from "./provider.js";
+
+export {
+  explainPlanFailure,
+  planNext,
+  planSchema,
+  SYSTEM_PROMPT,
+  type Plan,
+  type PlanFailure,
+  type PlanOutcome,
+  type PlanRequest,
+} from "./planner.js";
