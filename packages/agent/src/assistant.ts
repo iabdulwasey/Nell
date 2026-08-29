@@ -433,8 +433,48 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
    * default.
    */
   const text = said.join("\n\n").trim() || preamble.join("\n\n").trim();
+
+  /**
+   * It said it made a file. Check whether it did.
+   *
+   * Reported directly: *"got a response saying done, even the pdf name, but
+   * never got the pdf."* The model wrote a document, named it, described it, and
+   * no artefact came back — the code had written it somewhere the sandbox does
+   * not collect, so there was nothing to attach and nothing that knew it.
+   *
+   * This is the worst of the three ways a document can fail, because it is the
+   * only one that produces a confident, complete-looking answer. A truncated
+   * reply looks wrong; a failed run can be logged; a reply that names a file it
+   * never made reads exactly like an assistant that forgot to press attach.
+   *
+   * So the claim is checked against the artefacts. Being wrong in the cautious
+   * direction costs a sentence; being wrong the other way is a promise nobody
+   * kept.
+   */
+  if (files.length === 0 && CLAIMS_A_FILE.test(text)) {
+    request.onDiagnostic?.("claimed a file but produced none");
+    return {
+      ok: false,
+      reason:
+        "I wrote the document but it never came back as a file — the code saved it somewhere " +
+        "I could not collect. Ask again and I'll write it out properly.",
+      retryable: true,
+    };
+  }
+
   return { ok: true, text, files };
 }
+
+/**
+ * Language that promises an attachment.
+ *
+ * Deliberately narrow: it must catch "I've created report.pdf" and must not
+ * catch a discussion *about* PDFs. A false positive turns a good answer into an
+ * apology, so it looks for a filename with a document extension, or a plain
+ * statement of having made one.
+ */
+const CLAIMS_A_FILE =
+  /\b[\w-]{1,60}\.(pdf|docx?|xlsx?|pptx?|csv|png|jpe?g|zip)\b|\b(created|generated|produced|attached|saved|here is|here's) (the |your |a |an )?(pdf|document|file|report|spreadsheet|deck|image)\b/iu;
 
 /**
  * A filename for something the model made.
