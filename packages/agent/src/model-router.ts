@@ -26,6 +26,17 @@ export interface ModelSpec {
   readonly inputCostPerMillion: number;
   readonly outputCostPerMillion: number;
   readonly supportsVision: boolean;
+  /**
+   * How much the model can hold, in tokens.
+   *
+   * Recorded because it is what actually runs out. The conversation window was
+   * a hand-picked 3,000 tokens — an arbitrary number for a quantity that varies
+   * by two orders of magnitude across this catalog, which threw away turns a
+   * 200,000-token model could comfortably have kept. Prices were here from the
+   * start and capacity was not, which is the same omission the capability map
+   * had: the catalog described what a model *costs* and not what it can *do*.
+   */
+  readonly contextWindow: number;
 }
 
 /**

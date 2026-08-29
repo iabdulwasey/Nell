@@ -56,6 +56,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 500,
     outputCostPerMillion: 2500,
     supportsVision: true,
+    contextWindow: 200_000,
     suitableFor: ["frontier"],
   },
   {
@@ -66,6 +67,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 200,
     outputCostPerMillion: 1000,
     supportsVision: true,
+    contextWindow: 200_000,
     suitableFor: ["worker", "frontier"],
   },
   {
@@ -76,6 +78,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 100,
     outputCostPerMillion: 500,
     supportsVision: true,
+    contextWindow: 200_000,
     suitableFor: ["nano"],
   },
 
@@ -88,6 +91,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 500,
     outputCostPerMillion: 3000,
     supportsVision: true,
+    contextWindow: 128_000,
     suitableFor: ["frontier"],
   },
   {
@@ -98,6 +102,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 200,
     outputCostPerMillion: 1200,
     supportsVision: true,
+    contextWindow: 128_000,
     suitableFor: ["worker"],
   },
 
@@ -110,6 +115,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 150,
     outputCostPerMillion: 900,
     supportsVision: true,
+    contextWindow: 1_000_000,
     suitableFor: ["nano", "worker"],
   },
 
@@ -122,6 +128,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 300,
     outputCostPerMillion: 1500,
     supportsVision: true,
+    contextWindow: 128_000,
     suitableFor: ["worker", "frontier"],
   },
 
@@ -135,6 +142,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 27,
     outputCostPerMillion: 110,
     supportsVision: false,
+    contextWindow: 128_000,
     suitableFor: ["nano", "worker"],
   },
 
@@ -147,6 +155,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 60,
     outputCostPerMillion: 220,
     supportsVision: true,
+    contextWindow: 128_000,
     suitableFor: ["nano", "worker"],
   },
 
@@ -159,6 +168,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 60,
     outputCostPerMillion: 250,
     supportsVision: true,
+    contextWindow: 128_000,
     suitableFor: ["nano", "worker"],
   },
 
@@ -172,6 +182,7 @@ export const REFERENCE_CATALOG: readonly CatalogEntry[] = [
     inputCostPerMillion: 0,
     outputCostPerMillion: 0,
     supportsVision: false,
+    contextWindow: 32_000,
     suitableFor: ["nano", "worker", "frontier"],
   },
 ];

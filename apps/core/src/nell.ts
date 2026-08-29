@@ -57,7 +57,15 @@ import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
 import { readDirectives, readLedger, recordOutcome } from "./memory-store.js";
-import { recentTurns, rememberTurn, renderConversation } from "./conversation.js";
+import {
+  MIN_RECALL_TOKENS,
+  PROMPT_RESERVE_TOKENS,
+  recallBudgetFor,
+  recentTurns,
+  rememberTurn,
+  renderConversation,
+} from "./conversation.js";
+import { compact, forgetNote, readNotes, renderNotes, writeNote } from "./notes.js";
 import type { AuditView } from "./audit-store.js";
 import { FORMS } from "./vault-kinds.js";
 import type { CredentialOffer } from "./vault-secrets.js";
@@ -257,6 +265,12 @@ export async function handleMessage(
           )
         )
       );
+    } else if (command === "/remember") {
+      await ensureWorkspace(options, scope);
+      await reply(await rememberCommand(options, scope, objective));
+    } else if (command === "/forget") {
+      await ensureWorkspace(options, scope);
+      await reply(await forgetCommand(options, scope, objective));
     } else if (command === "/memory") {
       await ensureWorkspace(options, scope);
       await reply(await memoryCommand(options, scope, objective));
@@ -549,12 +563,30 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
    * `/memory`, which is the property worth having: what you read is what the
    * model sees.
    */
-  const brain = renderBrain({
-    workspaceId: run.scope.workspaceId,
-    preferences: profile,
-    entries: history,
-    now: Date.now(),
-  }).markdown;
+  const written = await withWorkspace(options.pool, run.scope, (client) =>
+    readNotes(client, run.scope)
+  ).catch(() => []);
+
+  /**
+   * The document, not the row list.
+   *
+   * Rendered once and used for both the dispatcher and the worker, so what the
+   * two see cannot drift — and it is the same markdown a person gets from
+   * `/memory`, which is the property worth having: what you read is what the
+   * model sees. Notes come after the structured facts, because the summary
+   * among them is a record of a conversation rather than a fact about anybody.
+   */
+  const brain = [
+    renderBrain({
+      workspaceId: run.scope.workspaceId,
+      preferences: profile,
+      entries: history,
+      now: Date.now(),
+    }).markdown,
+    renderNotes(written),
+  ]
+    .filter((part) => part.trim())
+    .join("\n\n");
 
   /**
    * What was said before — read *before* the turn is written down.
@@ -563,8 +595,21 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
    * message being handled into its own history, so the model would be shown the
    * request twice and might read the echo as a separate earlier ask.
    */
+  /**
+   * How much this model can hold, from the catalog.
+   *
+   * Falls back to the floor rather than to an optimistic guess: recalling less
+   * than a model could hold makes for a poorer conversation, while recalling
+   * more than it can hold makes the vendor reject the request outright, which
+   * fails the task rather than degrading it.
+   */
+  const window =
+    REFERENCE_CATALOG.find((entry) => entry.id === options.modelId)?.contextWindow ??
+    MIN_RECALL_TOKENS + PROMPT_RESERVE_TOKENS;
+  const budget = recallBudgetFor(window);
+
   const conversation = await withWorkspace(options.pool, run.scope, (client) =>
-    recentTurns(client, run.scope)
+    recentTurns(client, run.scope, budget)
   );
 
   await withWorkspace(options.pool, run.scope, (client) =>
@@ -578,6 +623,16 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
 
   let sessionId: string | undefined;
   let outcome: LoopOutcome;
+  /**
+   * What the task turned out to be about, once references were resolved.
+   *
+   * The ledger records this rather than what was typed, and the difference is
+   * the difference between a useful history and a useless one: "book the second
+   * one" means nothing a week later, while "book EK517, 3 September, London to
+   * Delhi" is a precedent somebody can act on. Defaults to the raw message so a
+   * task that dies before planning still records something true.
+   */
+  let resolved = run.objective;
   const produced: { readonly path: string; readonly name: string }[] = [];
 
   try {
@@ -606,6 +661,8 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
       ...(conversation.length > 0 ? { conversation: renderConversation(conversation) } : {}),
       ...(brain ? { profile: brain } : {}),
     });
+
+    resolved = plan.objective;
 
     const missing = unsupported(plan.steps, options.capabilities);
     if (missing.length > 0) {
@@ -731,7 +788,7 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
   await withWorkspace(options.pool, run.scope, (client) =>
     recordOutcome(client, run.scope, {
       taskId: run.taskId,
-      objective: run.objective,
+      objective: resolved,
       outcome: outcome.ok ? "succeeded" : outcome.needsApproval ? "blocked-on-user" : "failed",
     })
   ).catch(() => undefined);
@@ -789,6 +846,25 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
   ).catch(() => undefined);
 
   await reply(said);
+
+  /**
+   * Fold anything that has fallen out of the recent window, now the user is not
+   * waiting.
+   *
+   * After the reply on purpose: compaction costs a model call, and paying for
+   * one before answering would be an odd trade. Failures are swallowed because
+   * a summary that could not be written is a smaller problem than a task
+   * reported as failed after it succeeded — the watermark means the next task
+   * picks up exactly where this one stopped.
+   */
+  await withWorkspace(options.pool, run.scope, (client) =>
+    compact(client, run.scope, { provider: run.model, model: options.modelId }, budget)
+  )
+    .then((result) => {
+      if (result.folded > 0) log(`  compacted ${String(result.folded)} older turns`);
+    })
+    .catch(() => undefined);
+
   return outcome;
 }
 
@@ -855,6 +931,57 @@ async function ensureWorkspace(options: NellOptions, scope: AccessScope): Promis
 }
 
 /**
+ * `/remember <anything>` — the part of memory with no column.
+ *
+ * A preference is a key and a value; the ledger is an objective and an amount.
+ * Neither holds "planning Delhi in September, avoid early flights, passport
+ * expires in November so renew first" — one thought rather than three rows.
+ *
+ * The lineage is `user` without needing to be checked, because a command the
+ * user typed *is* the user speaking. That is the whole reason this is a command
+ * rather than something the agent decides to do after reading a page.
+ */
+async function rememberCommand(
+  options: NellOptions,
+  scope: AccessScope,
+  objective: string
+): Promise<string> {
+  const body = objective.replace(/^\/remember\s*/iu, "").trim();
+  if (!body) {
+    return [
+      "Tell me what to remember — /remember I'm vegetarian and my partner is not.",
+      "",
+      "Anything at all. It goes in MEMORY.md, which you can read with /memory and I read",
+      "before every task.",
+    ].join("\n");
+  }
+
+  await withWorkspace(options.pool, scope, (client) =>
+    writeNote(client, scope, { kind: "note", body, lineage: "user", because: "you told me" })
+  );
+
+  return `Noted: ${body}`;
+}
+
+/** `/forget <n>` — by position in the list `/memory` just showed. */
+async function forgetCommand(
+  options: NellOptions,
+  scope: AccessScope,
+  objective: string
+): Promise<string> {
+  const index = Number(objective.split(/\s+/u)[1]);
+  const notes = (
+    await withWorkspace(options.pool, scope, (client) => readNotes(client, scope))
+  ).filter((note) => note.kind === "note");
+
+  const target = Number.isInteger(index) ? notes[index - 1] : undefined;
+  if (!target) return "Send /memory to see the notes, then /forget with a number from it.";
+
+  await withWorkspace(options.pool, scope, (client) => forgetNote(client, scope, target.id));
+  return `Forgotten: ${target.body}`;
+}
+
+/**
  * `/memory` — the three files, and the point of keeping memory this way.
  *
  * Memory is *stored* as rows, because that is what gives transactions, tenant
@@ -885,13 +1012,39 @@ async function memoryCommand(
     })
   );
 
-  const files = exportMemory({
+  const rendered = exportMemory({
     workspaceId: scope.workspaceId,
     preferences,
     directives,
     entries,
     now: Date.now(),
   }).files;
+
+  /**
+   * Notes are appended to `MEMORY.md` rather than given a fourth file.
+   *
+   * They are facts Nell recalls, which is exactly what that file is for — and a
+   * `NOTES.md` would split "what it knows about you" across two places, so
+   * correcting something would mean guessing which one it is in.
+   */
+  const written = await withWorkspace(options.pool, scope, (client) => readNotes(client, scope));
+  const extra = renderNotes(written);
+  const numbered = written
+    .filter((note) => note.kind === "note")
+    .map((note, index) => `${String(index + 1)}. ${note.body}`);
+
+  const files: Record<string, string> = {
+    ...rendered,
+    "MEMORY.md": [
+      rendered["MEMORY.md"]?.trimEnd() ?? "",
+      extra,
+      numbered.length > 0
+        ? `_/forget <number> to remove one of the ${String(numbered.length)} notes._`
+        : "",
+    ]
+      .filter((part) => part.trim())
+      .join("\n\n"),
+  };
 
   const named: Readonly<Record<string, string>> = {
     user: "USER.md",
@@ -916,6 +1069,7 @@ async function memoryCommand(
       .join("\n\n---\n\n"),
     "",
     "/memory rules · /memory facts · /memory tasks for one at a time.",
+    "/remember <anything> to add a note · /forget <number> to drop one.",
     "This is exactly what I read before every task — not a summary of it.",
   ].join("\n");
 }

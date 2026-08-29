@@ -232,6 +232,50 @@ export const taskLedger = pgTable(
 );
 
 /**
+ * Prose Nell has written down — the part of memory that has no column.
+ *
+ * `preferences` is key and value, and the ledger is objective, merchant and
+ * amount. Neither holds *"planning Delhi in September, wants to avoid early
+ * flights, passport expires in November so renew that first"* — one coherent
+ * note rather than three rows. Enumerating what a model may remember fails the
+ * same way enumerating what it may *do* failed: the list reaches exactly what
+ * somebody thought of, and the standard is almost everything.
+ *
+ * **`lineage` decides how a row is rendered, and it is the whole safety story.**
+ * A note derived from what the user said is a fact and reads as one. A rolling
+ * summary of a conversation is *not* — it covers Nell's own replies, and those
+ * quote web pages, so a summary presented as fact would launder a hostile page
+ * into permanent memory. Worse than a one-shot injection, because every future
+ * turn would load it.
+ */
+export const notes = pgTable(
+  "notes",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /** `note` — a durable fact. `summary` — compacted conversation. */
+    kind: text("kind").notNull(),
+    body: text("body").notNull(),
+    /** `user` for something they said; `mixed` for anything covering Nell's replies. */
+    lineage: text("lineage").notNull(),
+    /**
+     * For a summary: the last message id folded into it.
+     *
+     * The watermark that makes compaction resumable and idempotent — without it,
+     * a restart mid-compaction either loses turns or folds them in twice.
+     */
+    coversThroughId: integer("covers_through_id"),
+    /** Why Nell believes this, so a wrong note is arguable rather than mysterious. */
+    because: text("because"),
+    supersededBy: text("superseded_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("notes_workspace_idx").on(table.workspaceId, table.createdAt)]
+);
+
+/**
  * Standing rules, kept apart from facts on purpose.
  *
  * `preferences` holds what Nell *knows* — where you live, which airline you
@@ -328,6 +372,7 @@ export const TENANT_TABLES = [
   "preferences",
   "task_ledger",
   "directives",
+  "notes",
   "messages",
   "audit_log",
 ] as const;

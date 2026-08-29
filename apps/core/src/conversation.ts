@@ -39,14 +39,51 @@ export interface Turn {
 }
 
 /**
- * How much of the prompt the conversation may occupy.
+ * Everything in a prompt that is not the conversation.
  *
- * A budget rather than a limit on turns. Sized so a long exchange still leaves
- * room for the page, the profile and the answer — the conversation is context
- * for the request, not the request itself, and a turn that crowds out the page
- * it is meant to act on has done the opposite of helping.
+ * The system prompt, the brain document, the page snapshot on a browse turn,
+ * the reply schema, and room for the answer itself. A sum of nameable parts
+ * rather than a fraction of the window, because a fraction is another number
+ * picked from the air — and the snapshot is the large one, easily tens of
+ * thousands of tokens on a listing page.
  */
-export const RECALL_TOKEN_BUDGET = 3000;
+export const PROMPT_RESERVE_TOKENS = 48_000;
+
+/**
+ * The floor, for a model too small to hold a conversation and a page at once.
+ *
+ * A local 8k endpoint would otherwise compute a negative budget and recall
+ * nothing at all, which reads as amnesia rather than as a small model.
+ */
+export const MIN_RECALL_TOKENS = 2000;
+
+/**
+ * How much of the prompt the conversation may occupy — **derived from the model
+ * being used**, not chosen.
+ *
+ * This was a flat 3,000 tokens, which was the same mistake as a step limit on
+ * the browser loop and a timeout on the assist path, made a fourth time. Worse
+ * here, because this file's own header claims "the thing that actually runs out
+ * is context, so context is what this counts" — and then counted something
+ * else. 3,000 is not what runs out. A 200,000-token model was being asked to
+ * forget a conversation at one and a half percent of what it could hold.
+ *
+ * A chat should remember everything the model can hold, and compact only when
+ * it genuinely cannot. That is what every assistant people are used to does,
+ * and there is no reason for this one to be stingier.
+ */
+export function recallBudgetFor(contextWindow: number): number {
+  return Math.max(MIN_RECALL_TOKENS, contextWindow - PROMPT_RESERVE_TOKENS);
+}
+
+/**
+ * Used when the caller does not know which model it is talking to.
+ *
+ * Deliberately the floor rather than a guess at a typical window: recalling too
+ * little is a worse conversation, while recalling more than fits is a request
+ * the vendor rejects outright.
+ */
+export const RECALL_TOKEN_BUDGET = MIN_RECALL_TOKENS;
 
 /**
  * Tokens, approximately, from characters.
@@ -116,6 +153,13 @@ export async function rememberTurn(
  * Read newest-first so the budget is spent on what is most likely to be
  * referred to, then reversed for rendering — a conversation shown backwards
  * reads as one, and models follow the ordering they are given.
+ *
+ * The row limit is high on purpose. It was 60, which was fine beside a
+ * 3,000-token budget and became the real bound the moment the budget started
+ * coming from the model: a 200,000-token window holds far more than sixty
+ * turns, and a second hidden limit would have quietly capped the first. It is
+ * now large enough that the token budget is always what decides, and small
+ * enough that a pathological history cannot pull the whole table into memory.
  */
 export async function recentTurns(
   client: PoolClient,
@@ -126,7 +170,7 @@ export async function recentTurns(
     `SELECT role, body, at, files FROM messages
       WHERE workspace_id = $1
       ORDER BY at DESC, id DESC
-      LIMIT 60`,
+      LIMIT 2000`,
     [scope.workspaceId]
   );
 

@@ -15,6 +15,7 @@ const catalog: ModelCatalog = {
     inputCostPerMillion: 10,
     outputCostPerMillion: 40,
     supportsVision: false,
+    contextWindow: 128_000,
   },
   worker: {
     id: "worker-1",
@@ -22,6 +23,7 @@ const catalog: ModelCatalog = {
     inputCostPerMillion: 200,
     outputCostPerMillion: 1000,
     supportsVision: false,
+    contextWindow: 128_000,
   },
   frontier: {
     id: "frontier-1",
@@ -29,6 +31,7 @@ const catalog: ModelCatalog = {
     inputCostPerMillion: 500,
     outputCostPerMillion: 2500,
     supportsVision: true,
+    contextWindow: 128_000,
   },
 };
 

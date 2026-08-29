@@ -18,6 +18,7 @@ function entry(overrides: Partial<CatalogEntry> = {}): CatalogEntry {
     inputCostPerMillion: 100,
     outputCostPerMillion: 500,
     supportsVision: true,
+    contextWindow: 128_000,
     suitableFor: ["worker"],
     ...overrides,
   };

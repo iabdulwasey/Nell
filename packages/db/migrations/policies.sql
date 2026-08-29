@@ -80,6 +80,13 @@ CREATE POLICY directives_workspace_isolation ON directives
   USING (workspace_id = current_setting('app.workspace_id', true))
   WITH CHECK (workspace_id = current_setting('app.workspace_id', true));
 
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notes FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS notes_workspace_isolation ON notes;
+CREATE POLICY notes_workspace_isolation ON notes
+  USING (workspace_id = current_setting('app.workspace_id', true))
+  WITH CHECK (workspace_id = current_setting('app.workspace_id', true));
+
 ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE messages FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS messages_workspace_isolation ON messages;
