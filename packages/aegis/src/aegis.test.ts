@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isConsequential,
   afterNavigation,
   authorizeOperation,
   authorizeSpend,
@@ -267,5 +268,49 @@ describe("provenance gate", () => {
         false
       );
     }
+  });
+});
+
+describe("the gate fails closed", () => {
+  const fromEmailOnly = { newContext: ["untrusted"] as const, userConfirmed: false };
+
+  // The bug this guards: listing the dangerous tools means a tool nobody
+  // remembered to list is allowed, silently.
+  it("treats an unrecognised tool as consequential", () => {
+    expect(isConsequential("purchase")).toBe(true);
+    expect(isConsequential("some-tool-added-next-year")).toBe(true);
+    expect(authorizeTool(fromEmailOnly, "purchase").allowed).toBe(false);
+  });
+
+  it("treats every declared dangerous tool as consequential", () => {
+    for (const tool of [
+      "spend",
+      "send-message",
+      "use-credential",
+      "write-memory",
+      "manage-monitor",
+      "delete-data",
+    ] as const) {
+      expect(isConsequential(tool)).toBe(true);
+      expect(authorizeTool(fromEmailOnly, tool).allowed).toBe(false);
+    }
+  });
+
+  // Only these two, and only by explicit decision.
+  it("permits exactly the tools listed as safe", () => {
+    for (const tool of ["read", "search"] as const) {
+      expect(isConsequential(tool)).toBe(false);
+      expect(authorizeTool(fromEmailOnly, tool).allowed).toBe(true);
+    }
+  });
+
+  it("still allows a dangerous tool the user confirmed", () => {
+    expect(authorizeTool({ ...fromEmailOnly, userConfirmed: true }, "purchase").allowed).toBe(true);
+  });
+
+  it("still allows a dangerous tool with a trusted basis in the turn", () => {
+    expect(
+      authorizeTool({ newContext: ["user", "untrusted"], userConfirmed: false }, "purchase").allowed
+    ).toBe(true);
   });
 });

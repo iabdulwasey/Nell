@@ -22,3 +22,17 @@ export {
   type OtpExtraction,
   type RawContent,
 } from "./quarantine.js";
+
+export {
+  MAX_QUERY_LENGTH,
+  MAX_RESULTS,
+  preferSearch,
+  renderFindings,
+  searchResultSchema,
+  searchWeb,
+  type SearchFindings,
+  type SearchOptions,
+  type SearchProvider,
+  type SearchQuery,
+  type SearchResult,
+} from "./search.js";

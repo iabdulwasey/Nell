@@ -27,6 +27,13 @@ import {
   type ComputerAction,
 } from "@nell/browser";
 import {
+  AGENT_IN_CONTROL,
+  handOverControl,
+  takeBackControl,
+  type ControlState,
+  type HandoffGrant,
+} from "./handoff.js";
+import {
   authorizeOperation,
   afterNavigation,
   scrubSecrets,
@@ -126,6 +133,7 @@ export class BrowserExecutor {
   readonly #now: () => Date;
   readonly #secretValues: () => readonly string[];
   readonly #taint = new Map<string, TaintState>();
+  readonly #control = new Map<string, ControlState>();
 
   constructor(options: ExecutorOptions) {
     this.#driver = options.driver;
@@ -136,6 +144,46 @@ export class BrowserExecutor {
 
   taintOf(sessionId: string): TaintState {
     return this.#taint.get(sessionId) ?? UNTAINTED;
+  }
+
+  controlOf(sessionId: string): ControlState {
+    return this.#control.get(sessionId) ?? AGENT_IN_CONTROL;
+  }
+
+  /** Give the controls to the person. The agent stops acting until they finish. */
+  handOver(sessionId: string, grant: HandoffGrant, now: number): ControlState {
+    const state = handOverControl(grant, now);
+    this.#control.set(sessionId, state);
+    return state;
+  }
+
+  /**
+   * Take the controls back.
+   *
+   * The session is marked tainted for the handoff origin, because we do not know
+   * what the person did while they held it — they may have typed a password or a
+   * one-time code. That blocks the mechanical ways a secret could be carried
+   * back to the model: field-value reads, the clipboard, downloads and uploads,
+   * until the session navigates away.
+   *
+   * It does NOT stop the agent screenshotting a secret still visible on screen,
+   * and cannot, because the agent must be able to see in order to continue. In
+   * practice the browser covers the common case for us — a password field
+   * renders as dots, so what is on screen is already not the secret — and a
+   * one-time code is single-use and near-expired by the time it is on screen.
+   * Stated here rather than left as an assumption.
+   */
+  takeBack(sessionId: string, origin: string): ControlState {
+    const state = takeBackControl();
+    this.#control.set(sessionId, state);
+
+    const current = this.taintOf(sessionId);
+    this.#taint.set(sessionId, {
+      tainted: true,
+      origin,
+      filledSelectors: current.filledSelectors,
+    });
+    return state;
   }
 
   /** Record that the vault filled a credential into this session. */
@@ -164,6 +212,15 @@ export class BrowserExecutor {
     request: ExecuteRequest
   ): Promise<ExecuteOutcome> {
     const taint = this.taintOf(sessionId);
+
+    // Two parties on one pointer would fight for it, and the agent would be
+    // acting inside a state the person authenticated and policy never saw.
+    const control = this.controlOf(sessionId);
+    if (control.holder === "human") {
+      const reason = "A person is driving this session — waiting for them to finish.";
+      await this.#deny(scope, sessionId, "handoff", reason);
+      return { ok: false, reason, refusedAt: 0, taint };
+    }
 
     const classes =
       request.kind === "targeted"

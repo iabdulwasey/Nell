@@ -64,3 +64,28 @@ export {
   type ExecutorOptions,
   type SessionDriver,
 } from "./executor.js";
+
+export {
+  AGENT_IN_CONTROL,
+  DEFAULT_HANDOFF_TTL_MS,
+  describeReason,
+  explainHandoffDenial,
+  handOverControl,
+  handoffMessage,
+  handoffReasonSchema,
+  hashToken,
+  markRedeemed,
+  mintHandoff,
+  redeemHandoff,
+  revokeHandoff,
+  takeBackControl,
+  type ControlHolder,
+  type ControlState,
+  type HandoffDecision,
+  type HandoffDenialReason,
+  type HandoffGrant,
+  type HandoffReason,
+  type MintedHandoff,
+  type MintHandoffOptions,
+  type RedeemOptions,
+} from "./handoff.js";

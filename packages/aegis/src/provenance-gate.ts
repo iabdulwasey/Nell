@@ -26,17 +26,30 @@ export type ToolClass =
   | "manage-monitor"
   | "delete-data";
 
-const CONSEQUENTIAL: ReadonlySet<ToolClass> = new Set<ToolClass>([
-  "spend",
-  "send-message",
-  "use-credential",
-  "write-memory",
-  "manage-monitor",
-  "delete-data",
-]);
+/**
+ * The tools that are safe to invoke on untrusted say-so, enumerated exhaustively.
+ *
+ * Deliberately inverted. Listing the *dangerous* tools instead reads more
+ * naturally and fails in the worst possible direction: a tool class added to the
+ * union and forgotten here would be waved through, and so would any tool name
+ * that reached this function as a runtime string rather than a checked literal.
+ * Both are silent, and both look exactly like everything working.
+ *
+ * Listing the safe ones means the mistake points the other way. A new tool
+ * starts out requiring a trusted basis, and someone has to deliberately decide
+ * it is harmless. Being wrong then costs a confirmation prompt instead of an
+ * unauthorized action.
+ */
+const SAFE: ReadonlySet<string> = new Set<ToolClass>(["read", "search"]);
 
-export function isConsequential(tool: ToolClass): boolean {
-  return CONSEQUENTIAL.has(tool);
+/**
+ * Accepts an arbitrary string, not just a `ToolClass`. The type union is a
+ * compile-time guarantee and tool names do not always arrive at compile time —
+ * a registry lookup or a model-supplied name is a string, and an unrecognised
+ * one must be treated as dangerous rather than as safe by default.
+ */
+export function isConsequential(tool: ToolClass | (string & {})): boolean {
+  return !SAFE.has(tool);
 }
 
 export interface TurnContext {
@@ -53,7 +66,7 @@ export type GateDecision =
   | { readonly allowed: true }
   | { readonly allowed: false; readonly reason: string; readonly needsConfirmation: boolean };
 
-export function authorizeTool(context: TurnContext, tool: ToolClass): GateDecision {
+export function authorizeTool(context: TurnContext, tool: ToolClass | (string & {})): GateDecision {
   if (!isConsequential(tool)) return { allowed: true };
   if (context.userConfirmed) return { allowed: true };
 

@@ -5,6 +5,7 @@ import { LocalBrowserProvider } from "@nell/browser";
 import type { BrowserAction, ComputerAction } from "@nell/browser";
 import {
   BrowserExecutor,
+  mintHandoff,
   type DriverOptions,
   type DriverResult,
   type ExecuteRequest,
@@ -340,5 +341,94 @@ describe("the port and the real provider have not drifted", () => {
     const driver: SessionDriver = new LocalBrowserProvider();
     expect(driver.perform).toBeTypeOf("function");
     expect(driver.performComputer).toBeTypeOf("function");
+  });
+});
+
+describe("while a person is driving", () => {
+  const grant = mintHandoff({
+    workspaceId: scope.workspaceId,
+    machineId: "machine-1",
+    taskId: "task-1",
+    reason: "captcha",
+    origin: "https://tickets.example",
+    pepper: "pepper",
+    now: 1_700_000_000_000,
+  }).grant;
+
+  // Two parties on one pointer would fight for it.
+  it("the agent stops acting", async () => {
+    executor.handOver(SESSION, grant, 1_700_000_000_000);
+
+    const outcome = await executor.execute(scope, SESSION, {
+      kind: "computer",
+      actions: [pixelClick],
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toMatch(/person is driving/iu);
+    expect(driver.computer).toHaveLength(0);
+  });
+
+  it("refuses the targeted path too, not just pixels", async () => {
+    executor.handOver(SESSION, grant, 1_700_000_000_000);
+    const outcome = await executor.execute(scope, SESSION, { kind: "targeted", actions: [click] });
+    expect(outcome.ok).toBe(false);
+    expect(driver.targeted).toHaveLength(0);
+  });
+
+  it("records the refusal", async () => {
+    executor.handOver(SESSION, grant, 1_700_000_000_000);
+    await executor.execute(scope, SESSION, { kind: "computer", actions: [pixelClick] });
+    expect(audit[0]).toMatchObject({ action: "policy.deny", detail: { operation: "handoff" } });
+  });
+
+  it("only pauses the session that was handed over", async () => {
+    executor.handOver(SESSION, grant, 1_700_000_000_000);
+    const other = await executor.execute(scope, "session-elsewhere", {
+      kind: "computer",
+      actions: [pixelClick],
+    });
+    expect(other.ok).toBe(true);
+  });
+
+  it("resumes once the controls come back", async () => {
+    executor.handOver(SESSION, grant, 1_700_000_000_000);
+    executor.takeBack(SESSION, "https://tickets.example");
+
+    const outcome = await executor.execute(scope, SESSION, {
+      kind: "computer",
+      actions: [pixelClick],
+    });
+    expect(outcome.ok).toBe(true);
+  });
+
+  // We do not know what the person typed while they held the controls.
+  it("treats the session as tainted afterwards", async () => {
+    executor.handOver(SESSION, grant, 1_700_000_000_000);
+    executor.takeBack(SESSION, "https://tickets.example");
+
+    expect(executor.taintOf(SESSION).tainted).toBe(true);
+
+    const outcome = await executor.execute(scope, SESSION, {
+      kind: "computer",
+      actions: [{ action: "key", keys: ["Control", "c"] }],
+    });
+    expect(outcome.ok).toBe(false);
+  });
+
+  it("clears that taint once the session leaves the page", async () => {
+    executor.handOver(SESSION, grant, 1_700_000_000_000);
+    executor.takeBack(SESSION, "https://tickets.example");
+    driver.origin = "https://elsewhere.example";
+
+    const outcome = await executor.execute(scope, SESSION, {
+      kind: "computer",
+      actions: [pixelClick],
+    });
+    expect(outcome.taint.tainted).toBe(false);
+  });
+
+  it("starts with the agent in control", () => {
+    expect(executor.controlOf("fresh-session").holder).toBe("agent");
   });
 });
