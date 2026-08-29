@@ -1,13 +1,30 @@
 /**
  * @nell/recipes
  *
- * Public, per-merchant browser playbooks containing NO user data — evals-gated. Reliability compounds across the install base.
+ * Public, per-merchant browser playbooks containing no user data.
+ *
+ * The one asset that compounds across every install: a broken step is fixed
+ * once and every self-hoster and hosted user gets it. A recipe is data, never
+ * code, and never an authorization — every step it produces still meets the
+ * policy chokepoint.
  *
  * Governed by: docs/architecture.md
- *
- * Status: scaffold stub. Implementation lands per the roadmap.
  */
 
-// TODO(phase-0): implement per the referenced doc.
+export {
+  explainRecipeProblem,
+  instantiate,
+  recipeIntentSchema,
+  recipeParamSchema,
+  recipeSchema,
+  selectRecipe,
+  succeeded,
+  validateRecipe,
+  type InstantiateOutcome,
+  type Recipe,
+  type RecipeIntent,
+  type RecipeParam,
+  type RecipeProblem,
+} from "./recipe.js";
 
-export const __stub = true;
+export { RECIPES } from "./pack.js";

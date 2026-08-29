@@ -2,7 +2,7 @@
   "name": "nell",
   "version": "0.0.0",
   "private": true,
-  "description": "Nell \u2014 Open Source Instinct. A personal AI agent you text to get things done. Source-available, self-hostable, asks before it acts.",
+  "description": "Nell — Open Source Instinct. A personal AI agent you text to get things done. Source-available, self-hostable, asks before it acts.",
   "license": "FSL-1.1-Apache-2.0",
   "type": "module",
   "scripts": {
