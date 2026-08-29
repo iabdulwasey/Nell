@@ -145,6 +145,20 @@ await run(
     sessions,
     executor,
     fileRoot,
+    /**
+     * Which vendors this install has a key for.
+     *
+     * Used only to suggest the missing one: telling somebody to add an OpenAI
+     * key when they already have one is worse than saying nothing.
+     */
+    vendorKeys: new Set(
+      [
+        anthropicKey ? "anthropic" : "",
+        process.env["OPENAI_API_KEY"] ? "openai" : "",
+        process.env["GOOGLE_API_KEY"] ? "google" : "",
+        process.env["DEEPSEEK_API_KEY"] ? "deepseek" : "",
+      ].filter(Boolean)
+    ),
     ...(anthropicKey ? { assistKey: anthropicKey, assistModel: "claude-sonnet-4-5" } : {}),
     /**
      * What this install can actually do.

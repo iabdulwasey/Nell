@@ -9,6 +9,20 @@
  */
 
 export {
+  capabilitiesOf,
+  CAPABILITY_LABELS,
+  describe as describeCapabilities,
+  modelCapabilitySchema,
+  report as capabilityReport,
+  resolve as resolveCapabilities,
+  VENDOR_CAPABILITIES,
+  VENDOR_NAMES,
+  type Assignment,
+  type CapabilityReport,
+  type ModelCapability,
+  type ResolvedCapability,
+} from "./capabilities.js";
+export {
   assist,
   type AssistOutcome,
   type AssistRequest,

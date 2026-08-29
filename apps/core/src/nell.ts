@@ -19,12 +19,16 @@
 
 import { BrowserExecutor } from "@nell/aegis";
 import {
+  capabilityReport,
+  describeCapabilities,
   explainUnsupported,
   isBareReply,
+  REFERENCE_CATALOG,
   planWork,
   providerFor,
   unsupported,
   type Capability,
+  type ModelCapability,
   type ModelProvider,
   type ProviderKeys,
 } from "@nell/agent";
@@ -97,6 +101,13 @@ export interface NellOptions {
   /** Key and model for the assist step, when this install has one. */
   readonly assistKey?: string;
   readonly assistModel?: string;
+  /**
+   * Per-capability model overrides, so an install can be complete when no single
+   * vendor is — one model to reason, another to draw.
+   */
+  readonly assignment?: Readonly<Partial<Record<ModelCapability, string>>>;
+  /** Vendors this install has a key for, so settings can suggest the missing one. */
+  readonly vendorKeys: ReadonlySet<string>;
   readonly keys: ProviderKeys;
   readonly modelId: string;
   readonly telegramToken: string;
@@ -183,6 +194,32 @@ export async function handleMessage(
               "",
               "Send /stop to cancel them all.",
             ].join("\n")
+      );
+    } else if (command === "/models" || command === "/capabilities") {
+      /**
+       * What this install can do, and what would fix the gaps.
+       *
+       * Worth a command rather than a config file, because the limitation is
+       * otherwise invisible until a task fails: someone on Claude discovers it
+       * cannot draw by asking for a picture and being told no. Told up front, it
+       * is a decision about which key to add.
+       */
+      await reply(
+        describeCapabilities(
+          capabilityReport(
+            {
+              defaultModel: options.modelId,
+              ...(options.assignment ? { overrides: options.assignment } : {}),
+            },
+            (id: string) => {
+              const entry = REFERENCE_CATALOG.find((model) => model.id === id);
+              return entry
+                ? { provider: entry.provider, supportsVision: entry.supportsVision }
+                : undefined;
+            },
+            options.vendorKeys
+          )
+        )
       );
     } else if (command === "/stop") {
       await ensureWorkspace(options, scope);
