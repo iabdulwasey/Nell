@@ -18,13 +18,31 @@ import { chromium, type Page } from "playwright-core";
  * downloaded, so the path alone proves nothing — the file has to exist. Lives
  * here so callers can skip browser-dependent tests without taking a dependency
  * on Playwright themselves.
+ *
+ * **Throws under CI on purpose.** Skipping is right on a contributor's machine
+ * that has not run `playwright install`; it is never right on the runner that
+ * gates merges. Forty-five browser tests skipped silently in CI for the whole
+ * life of this repository while their results were quoted as though they had
+ * run — a skip reads exactly like a pass in a summary line. A predicate that
+ * throws is surprising, and the surprise is the entire point: the alternative
+ * is a green build that verified nothing.
  */
 export function chromiumAvailable(): boolean {
+  let present = false;
   try {
-    return existsSync(chromium.executablePath());
+    present = existsSync(chromium.executablePath());
   } catch {
-    return false;
+    present = false;
   }
+
+  if (!present && process.env["CI"]) {
+    throw new Error(
+      "Chromium is not installed and CI is set. Browser tests must not skip on the " +
+        "runner that gates merges — add `pnpm exec playwright install --with-deps chromium`."
+    );
+  }
+
+  return present;
 }
 import type { ComputerAction, CoordinateSpace, KeyName, Point } from "../computer.js";
 import { projectAction } from "../computer.js";
