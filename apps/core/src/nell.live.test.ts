@@ -152,14 +152,50 @@ describeLive("Nell, end to end", () => {
     );
 
     expect(outcome?.ok, JSON.stringify(outcome)).toBe(true);
-
-    const transcript = sent.join("\n");
     expect(sent[0]).toBe("On it.");
-    expect(transcript.toLowerCase()).toContain("thursday");
+
+    /**
+     * The *last* message, not the transcript.
+     *
+     * This assertion used to run against `sent.join("\n")`, which includes every
+     * streamed status line — so it passed while the agent was reaching the page,
+     * mentioning the date in a progress note, and then signing off with a
+     * description of where it had got to. Live, that looked like: asked for
+     * today's headlines, replied "the user is already on Google News and can see
+     * the top stories". The test was green throughout.
+     *
+     * What the user reads is the final message. Anything weaker than that
+     * doesn't test the product.
+     */
+    const final = sent.at(-1) ?? "";
+    expect(final.toLowerCase(), `final message was: ${final}`).toContain("thursday");
+
+    // And on the mechanism, not only on the text: a reasoning line that happened
+    // to mention the date would satisfy the assertion above while `answer` was
+    // empty and the reply had fallen back to describing the work.
+    const answer = outcome?.ok === true ? outcome.answer : "";
+    expect(answer.toLowerCase(), "the answer field itself").toContain("thursday");
 
     const rows = await tasksOf();
     expect(rows[0]?.status).toBe("done");
   }, 180_000);
+
+  /**
+   * Small talk is not an objective.
+   *
+   * Observed live: a bare "Ok" opened a browser, ran a model call, and reported
+   * that "Ok" did not specify an action.
+   */
+  it("does not open a browser for small talk", async () => {
+    sent = [];
+    const before = (await tasksOf()).length;
+
+    const outcome = await handleMessage(options, message("Ok"));
+
+    expect(outcome).toBeUndefined();
+    expect(sent).toHaveLength(1);
+    expect((await tasksOf()).length).toBe(before);
+  }, 30_000);
 
   /**
    * Anyone can message a Telegram bot. If inbound chat were trusted by default,

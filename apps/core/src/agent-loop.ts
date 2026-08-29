@@ -53,7 +53,19 @@ export const MAX_STEPS = 12;
 export const STUCK_AFTER = 3;
 
 export type LoopOutcome =
-  | { readonly ok: true; readonly steps: number; readonly summary: string }
+  /**
+   * `answer` is what the user asked for; `summary` is what the agent was doing.
+   * Kept separate because a model that has only one field to fill will fill it
+   * with the second, and the second is worthless to someone who cannot see the
+   * screen. Empty `answer` is legitimate — "book the table" has an outcome and
+   * no answer — so the caller falls back rather than treating it as a failure.
+   */
+  | {
+      readonly ok: true;
+      readonly steps: number;
+      readonly summary: string;
+      readonly answer: string;
+    }
   | {
       readonly ok: false;
       readonly steps: number;
@@ -73,6 +85,13 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
   const history: string[] = [];
   let unchanged = 0;
   let previousFingerprint = "";
+  /**
+   * The best answer seen so far, kept because running out of steps is not the
+   * same as having found nothing. A model part-way through a list of flights has
+   * genuinely useful half of one, and reporting only "I did not finish" throws
+   * away work the user already paid for.
+   */
+  let partial = "";
 
   for (let step = 1; step <= limit; step += 1) {
     // A fresh look every time. The previous plan's refs died the moment this
@@ -106,9 +125,15 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
 
     request.onStep?.(planned.plan.reasoning);
     history.push(planned.plan.reasoning);
+    if (planned.plan.answer.trim()) partial = planned.plan.answer.trim();
 
     if (planned.plan.done) {
-      return { ok: true, steps: step, summary: planned.plan.reasoning };
+      return {
+        ok: true,
+        steps: step,
+        summary: planned.plan.reasoning,
+        answer: planned.plan.answer.trim(),
+      };
     }
     if (planned.plan.actions.length === 0) {
       // Not done, nothing proposed. Treating this as success would report a
@@ -131,10 +156,12 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     }
   }
 
+  const ranOut = `I did not finish within ${String(limit)} steps, so I stopped rather than keep going.`;
+
   return {
     ok: false,
     steps: limit,
-    reason: `I did not finish within ${String(limit)} steps, so I stopped rather than keep going.`,
+    reason: partial ? `${ranOut}\n\nWhat I had so far:\n\n${partial}` : ranOut,
   };
 }
 

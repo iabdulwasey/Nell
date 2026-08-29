@@ -18,8 +18,9 @@
  */
 
 import { BrowserExecutor } from "@nell/aegis";
-import { providerFor, type ProviderKeys } from "@nell/agent";
+import { isBareReply, providerFor, type ProviderKeys } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
+import { greeting } from "@nell/memory";
 import { accessScopeForUser } from "@nell/shared";
 import type { Pool } from "pg";
 import { runLoop, type LoopOutcome } from "./agent-loop.js";
@@ -65,6 +66,41 @@ export async function handleMessage(
   const scope = accessScopeForUser(message.userId);
   const objective = message.envelope.text.trim();
   const taskId = message.idempotencyKey;
+
+  /**
+   * Commands are conversation, not work.
+   *
+   * Without this the first thing anyone ever sends — `/start`, which Telegram
+   * puts behind the button that opens a new bot — becomes an objective, and the
+   * agent opens a browser to find out what "/start" is. A first impression of
+   * the assistant confidently doing something absurd.
+   */
+  if (objective.startsWith("/")) {
+    const command = objective.split(/\s/u)[0]?.toLowerCase();
+    if (command === "/start" || command === "/help") {
+      await reply(greeting());
+    } else {
+      await reply("I do not know that command. Just tell me what you need in your own words.");
+    }
+    return undefined;
+  }
+
+  /**
+   * "Ok" is not a task.
+   *
+   * Observed live: a bare "Ok" became an objective, a browser opened, and the
+   * agent reported that "Ok" did not specify an action — having spent a model
+   * call and a page load to say so. `isBareReply` already recognises these
+   * because the steering router needs them; with no task waiting on an answer
+   * there is nothing for one to confirm, so it is small talk.
+   *
+   * Once tasks can block on a question this is where the reply gets routed to
+   * the task that asked it, which is what `routeMessage` is for.
+   */
+  if (isBareReply(objective)) {
+    await reply("Anything you need?");
+    return undefined;
+  }
 
   const resolved = providerFor(options.modelId, options.keys);
   if (!resolved.ok) {
@@ -134,7 +170,10 @@ export async function handleMessage(
     ]);
   });
 
-  await reply(outcome.ok ? `Done — ${outcome.summary}` : outcome.reason);
+  // The answer if there is one, and what was done if the task had no answer to
+  // give. Never both: prefixing the result with "Done — I searched three sites"
+  // buries it, and the result is the only part anyone asked for.
+  await reply(outcome.ok ? outcome.answer || `Done — ${outcome.summary}` : outcome.reason);
   return outcome;
 }
 

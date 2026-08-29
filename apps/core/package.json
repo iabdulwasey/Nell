@@ -6,12 +6,11 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
-    "build": "echo \"no build yet\" && exit 0",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude '**/*.live.test.ts' --passWithNoTests",
     "start": "tsx src/index.ts",
-    "nell": "node --experimental-strip-types src/main.ts",
+    "nell": "tsx src/main.ts",
     "test:live": "RUN_LIVE_MODEL_TESTS=1 vitest run src/nell.live.test.ts"
   },
   "dependencies": {
@@ -23,6 +22,7 @@
     "@nell/db": "workspace:*",
     "@nell/durable": "workspace:*",
     "@nell/license": "workspace:*",
+    "@nell/memory": "workspace:*",
     "@nell/shared": "workspace:*",
     "hono": "4.10.2",
     "pg": "8.23.0",
@@ -31,7 +31,7 @@
   "devDependencies": {
     "@types/node": "24.13.3",
     "@types/pg": "8.23.1",
-    "tsx": "4.20.3",
+    "tsx": "4.20.6",
     "vitest": "4.1.10"
   }
 }
