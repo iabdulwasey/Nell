@@ -22,10 +22,12 @@ import { isBareReply, providerFor, type ProviderKeys } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
 import type { SearchProvider } from "@nell/integrations";
 import { greeting } from "@nell/memory";
-import { accessScopeForUser } from "@nell/shared";
+import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
 import { runLoop, type LoopOutcome } from "./agent-loop.js";
 import { withWorkspace } from "./db.js";
+import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
+import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
 import { pollOnce, replyToStranger, sendMessage, type InboundMessage } from "./telegram-poll.js";
 import type { WorkspaceSessions } from "./workspace-session.js";
 
@@ -87,6 +89,33 @@ export async function handleMessage(
     const command = objective.split(/\s/u)[0]?.toLowerCase();
     if (command === "/start" || command === "/help") {
       await reply(greeting());
+    } else if (command === "/schedules") {
+      // Anything that acts on its own has to be inspectable, or the user is
+      // left guessing why they got a message at six in the morning.
+      await ensureWorkspace(options, scope);
+      const existing = await withWorkspace(options.pool, scope, (client) =>
+        listSchedules(client, scope)
+      );
+      await reply(
+        existing.length === 0
+          ? "Nothing scheduled. Ask me to do something every day and I'll set it up."
+          : [
+              "What I'm doing on a schedule:",
+              ...existing.map((row) => `• ${row.label} — ${row.prompt}`),
+              "",
+              "Send /stop to cancel them all.",
+            ].join("\n")
+      );
+    } else if (command === "/stop") {
+      await ensureWorkspace(options, scope);
+      const stopped = await withWorkspace(options.pool, scope, (client) =>
+        cancelAll(client, scope)
+      );
+      await reply(
+        stopped === 0
+          ? "Nothing was scheduled."
+          : `Stopped ${String(stopped)}. Nothing is scheduled now.`
+      );
     } else {
       await reply("I do not know that command. Just tell me what you need in your own words.");
     }
@@ -116,11 +145,35 @@ export async function handleMessage(
     return undefined;
   }
 
-  await withWorkspace(options.pool, scope, async (client) => {
-    await client.query(`INSERT INTO workspaces (id) VALUES ($1) ON CONFLICT DO NOTHING`, [
-      scope.workspaceId,
-    ]);
-  }).catch(() => undefined);
+  await ensureWorkspace(options, scope);
+
+  /**
+   * "Every morning at 6, scan the AI news" is a standing instruction, not a task
+   * to do once — and doing it once and forgetting is the failure the user
+   * actually reported, twice.
+   *
+   * Ordered before the task write on purpose: a schedule is not a task, and
+   * recording it as one would leave a permanently "running" row for work that
+   * has not started and a "done" row for work that never ends.
+   */
+  const requested = await parseScheduleRequest(objective, {
+    provider: resolved.provider,
+    model: options.modelId,
+  });
+
+  if (requested) {
+    await withWorkspace(options.pool, scope, (client) =>
+      createSchedule(client, scope, {
+        label: requested.label,
+        prompt: requested.task,
+        everyMinutes: requested.everyMinutes,
+        firstRunAt: requested.firstRunAt,
+        threadRef: message.envelope.threadRef,
+      })
+    );
+    await reply(describeSchedule(requested));
+    return undefined;
+  }
 
   await withWorkspace(options.pool, scope, async (client) => {
     await client.query(
@@ -182,6 +235,14 @@ export async function handleMessage(
   // buries it, and the result is the only part anyone asked for.
   await reply(outcome.ok ? outcome.answer || `Done — ${outcome.summary}` : outcome.reason);
   return outcome;
+}
+
+async function ensureWorkspace(options: NellOptions, scope: AccessScope): Promise<void> {
+  await withWorkspace(options.pool, scope, async (client) => {
+    await client.query(`INSERT INTO workspaces (id) VALUES ($1) ON CONFLICT DO NOTHING`, [
+      scope.workspaceId,
+    ]);
+  }).catch(() => undefined);
 }
 
 /**

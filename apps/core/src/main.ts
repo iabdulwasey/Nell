@@ -6,11 +6,15 @@
  * is harder to diagnose than one that will not boot.
  */
 
+import { BrowserExecutor } from "@nell/aegis";
+import { keysFromEnv, providerFor } from "@nell/agent";
 import { LocalBrowserProvider } from "@nell/browser/adapters";
-import { keysFromEnv } from "@nell/agent";
+import { accessScopeForUser } from "@nell/shared";
 import { anthropicSearchProvider } from "@nell/integrations";
 import { assertRlsEnforceable, createPool } from "./db.js";
 import { run } from "./nell.js";
+import { runTicker } from "./ticker.js";
+import { sendMessage } from "./telegram-poll.js";
 import { WorkspaceSessions } from "./workspace-session.js";
 
 const token = process.env["TELEGRAM_BOT_TOKEN"];
@@ -65,6 +69,39 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 console.log(`model: ${modelId}`);
 console.log(`owner: telegram ${owner!}`);
 
+/**
+ * The heartbeat runs beside the poll, not inside it.
+ *
+ * The poll spends most of its life blocked on a 25-second long poll; hanging
+ * scheduled work off it would mean a 6am briefing arriving whenever the next
+ * message happened to come in, which overnight is never.
+ *
+ * Scoped to the workspaces this process actually serves. Row-level security
+ * means a query outside a workspace matches nothing, and a scheduler that swept
+ * every tenant would need a role with a policy written for it — a real design
+ * decision, not something to reach for a superuser connection over.
+ */
+const resolvedModel = providerFor(modelId, keysFromEnv(process.env));
+const ticking = resolvedModel.ok
+  ? runTicker(
+      {
+        pool,
+        browser,
+        sessions,
+        executor: new BrowserExecutor({ driver: browser }),
+        model: resolvedModel.provider,
+        modelId,
+        ...(search ? { search } : {}),
+        send: (threadRef, text) => sendMessage({ token: token!, chatId: threadRef, text }),
+        log: (line) => {
+          console.log(line);
+        },
+      },
+      [accessScopeForUser(`tg-${owner!}`)],
+      controller.signal
+    )
+  : Promise.resolve();
+
 await run(
   {
     pool,
@@ -82,6 +119,7 @@ await run(
   controller.signal
 );
 
+await ticking;
 await sessions.close();
 await browser.shutdown();
 await pool.end();
