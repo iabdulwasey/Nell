@@ -14,8 +14,12 @@ import { LocalBrowserProvider } from "@nell/browser/adapters";
 import { accessScopeForUser } from "@nell/shared";
 import { anthropicSearchProvider } from "@nell/integrations";
 import { imageTool, type Capability } from "@nell/agent";
-import { assertRlsEnforceable, createPool } from "./db.js";
+import { EnvKeyProvider } from "@nell/vault";
+import { assertRlsEnforceable, createPool, withWorkspace } from "./db.js";
 import { run } from "./nell.js";
+import { vaultAccess } from "./vault-secrets.js";
+import { startVaultForm } from "./vault-form.js";
+import { forgetItem, listItems } from "./vault-store.js";
 import { runTicker } from "./ticker.js";
 import { sendMessage } from "./telegram-poll.js";
 import { WorkspaceSessions } from "./workspace-session.js";
@@ -70,13 +74,47 @@ const browser = new LocalBrowserProvider({
 const sessions = new WorkspaceSessions({ provider: browser, startUrl });
 
 /**
+ * The vault's key, or an explanation instead of one.
+ *
+ * Optional, and loudly so. Nell runs without it — it simply reaches a sign-in
+ * and stops, which is what it did before the vault had a database. What it must
+ * never do is start without a key and quietly store secrets somewhere else, so
+ * the absence is reported with the one command that fixes it rather than left to
+ * be discovered at a login wall.
+ */
+const vaultKeys = (() => {
+  if (!process.env["SECRET_ENCRYPTION_KEY"]) {
+    console.log("vault: off — set SECRET_ENCRYPTION_KEY (openssl rand -base64 32) to enable");
+    return undefined;
+  }
+  try {
+    return new EnvKeyProvider(process.env);
+  } catch (error) {
+    // A malformed key is a different problem from a missing one, and silently
+    // treating it as missing would hide a typo in the thing guarding passwords.
+    console.error(`vault: ${error instanceof Error ? error.message : "key unreadable"}`);
+    process.exit(1);
+  }
+})();
+
+const vault = vaultKeys ? vaultAccess(pool, vaultKeys) : undefined;
+
+/**
  * One chokepoint for the life of the process.
  *
  * It holds taint state and spend approvals, and both belong to the session
  * rather than to a task — a password filled during one task is still filled
  * during the next, on the same open page.
+ *
+ * The secret source goes *here* rather than to the agent, and that placement is
+ * the security property. Everything above this line handles ids; the decryption
+ * happens on the far side, after the origin has been read off the live session,
+ * and the taint machine starts watching the moment a value lands in a field.
  */
-const executor = new BrowserExecutor({ driver: browser });
+const executor = new BrowserExecutor({
+  driver: browser,
+  ...(vault ? { secrets: vault.secrets } : {}),
+});
 
 /**
  * A search vendor, not a model choice.
@@ -98,6 +136,15 @@ const anthropicKey = process.env["ANTHROPIC_API_KEY"];
 const googleKey = process.env["GOOGLE_API_KEY"];
 const specialists = googleKey ? [imageTool({ apiKey: googleKey })] : [];
 const search = anthropicKey ? anthropicSearchProvider({ apiKey: anthropicKey }) : undefined;
+
+/**
+ * The page a password is typed into, served on loopback.
+ *
+ * Only started when there is a key to encrypt with — a form that collects
+ * credentials and has nowhere to put them is worse than no form.
+ */
+const form = vaultKeys ? await startVaultForm({ pool, keys: vaultKeys }) : undefined;
+if (form) console.log("vault: on");
 
 const controller = new AbortController();
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -171,6 +218,17 @@ await run(
     ),
     ...(anthropicKey ? { assistKey: anthropicKey, assistModel: "claude-sonnet-4-5" } : {}),
     ...(specialists.length > 0 ? { tools: specialists } : {}),
+    ...(vault && form && vaultKeys
+      ? {
+          vault: {
+            list: (scope) => withWorkspace(pool, scope, (client) => listItems(client, scope)),
+            forget: (scope, itemId) =>
+              withWorkspace(pool, scope, (client) => forgetItem(client, scope, itemId)),
+            link: form.link,
+            offers: vault.offers,
+          },
+        }
+      : {}),
     /**
      * What this install can actually do.
      *
@@ -190,6 +248,7 @@ await run(
 );
 
 await ticking;
+await form?.close();
 await sessions.close();
 await browser.shutdown();
 await pool.end();

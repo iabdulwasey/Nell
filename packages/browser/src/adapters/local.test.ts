@@ -597,6 +597,78 @@ describeBrowser("secret masking", () => {
     await provider.destroy(scope, session.id);
   }, 60_000);
 
+  /**
+   * The other half of masking, and it had never been run against a browser.
+   *
+   * `fillSecret` is the one driver method that handles a plaintext credential,
+   * and everything above it — the origin gate, the executor, the taint machine —
+   * has been tested against a fake driver that returns a fixed selector. So the
+   * *decisions* were proven and the typing was not.
+   *
+   * Two things have to be true and only one of them is obvious. The value must
+   * reach the field. And the returned selector must actually match that field,
+   * because it is the only thing every later screenshot is masked by: a selector
+   * that is merely well-formed produces captures that mask nothing, and a
+   * password visible in the model's context is exactly the failure the taint
+   * machine exists to prevent.
+   */
+  it("types a credential into a real field and hands back a selector that finds it", async () => {
+    const session = await provider.createSession(scope, { startUrl: origin });
+
+    const { selector } = await provider.fillSecret(
+      scope,
+      session.id,
+      { by: "css", selector: "#name" },
+      "correct horse battery"
+    );
+
+    expect(selector).not.toBe("");
+
+    /**
+     * Read back through a snapshot, which is how the agent would see it — and
+     * the only way, since `extract` reads `textContent` and an `<input>` has
+     * none. That is itself a small comfort: the read-back path the taint machine
+     * guards cannot reach a filled field's value in the first place.
+     */
+    const after = await provider.snapshot(scope, session.id);
+    expect(after.nodes.some((node) => node.value === "correct horse battery")).toBe(true);
+
+    // And the selector the caller was handed resolves to that same field, which
+    // is what every later screenshot will be masked by.
+    const masked = await provider.perform(scope, session.id, [
+      { action: "waitFor", target: { by: "css", selector }, state: "visible", timeoutMs: 2000 },
+    ]);
+    expect(masked.currentOrigin).toBe(origin);
+
+    await provider.destroy(scope, session.id);
+  }, 60_000);
+
+  /**
+   * A ref target skips the stamp entirely and derives a selector from the ref,
+   * which is stable for the life of the snapshot. Worth its own case because it
+   * is a different branch, and the branch that runs in practice — the planner is
+   * given refs.
+   */
+  it("masks by ref when the fill was targeted by ref", async () => {
+    const session = await provider.createSession(scope, { startUrl: origin });
+    const snapshot = await provider.snapshot(scope, session.id);
+    const field = snapshot.nodes.find((node) => node.name === "Full name");
+    expect(field?.ref).toBeTruthy();
+
+    const { selector } = await provider.fillSecret(
+      scope,
+      session.id,
+      { by: "ref", ref: field!.ref },
+      "hunter2"
+    );
+
+    const after = await provider.snapshot(scope, session.id);
+    expect(after.nodes.some((node) => node.value === "hunter2")).toBe(true);
+    expect(selector).toContain(field!.ref);
+
+    await provider.destroy(scope, session.id);
+  }, 60_000);
+
   // A selector that matches nothing must not throw -- taint carries selectors
   // from a page the session may since have navigated away from.
   it("tolerates a mask selector that matches nothing", async () => {

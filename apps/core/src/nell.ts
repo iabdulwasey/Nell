@@ -55,6 +55,8 @@ import {
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
+import type { CredentialOffer } from "./vault-secrets.js";
+import type { VaultItemSummary } from "./vault-store.js";
 import {
   pollOnce,
   replyToStranger,
@@ -111,6 +113,23 @@ export interface NellOptions {
   readonly assignment?: Readonly<Partial<Record<ModelCapability, string>>>;
   /** Vendors this install has a key for, so settings can suggest the missing one. */
   readonly vendorKeys: ReadonlySet<string>;
+  /**
+   * The vault, when this install has a key for it.
+   *
+   * Absent means every stored-credential path is simply unavailable — no
+   * listing, no link, and nothing offered to the planner. That is a legitimate
+   * way to run Nell and it behaves exactly as it did before the vault existed:
+   * it reaches a sign-in and says so.
+   */
+  readonly vault?: {
+    /** Items held for this workspace. Never values. */
+    readonly list: (scope: AccessScope) => Promise<readonly VaultItemSummary[]>;
+    readonly forget: (scope: AccessScope, itemId: string) => Promise<boolean>;
+    /** A one-time loopback link for adding one. */
+    readonly link: (scope: AccessScope, origin?: string) => string;
+    /** Items usable on the page the browser has actually reached. */
+    readonly offers: (scope: AccessScope, origin: string) => Promise<readonly CredentialOffer[]>;
+  };
   readonly keys: ProviderKeys;
   readonly modelId: string;
   readonly telegramToken: string;
@@ -224,6 +243,9 @@ export async function handleMessage(
           )
         )
       );
+    } else if (command === "/vault") {
+      await ensureWorkspace(options, scope);
+      await reply(await vaultCommand(options, scope, objective));
     } else if (command === "/stop") {
       await ensureWorkspace(options, scope);
       const stopped = await withWorkspace(options.pool, scope, (client) =>
@@ -528,6 +550,7 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         ...(options.assistKey ? { assistKey: options.assistKey } : {}),
         ...(options.assistModel ? { assistModel: options.assistModel } : {}),
         ...(options.tools?.length ? { tools: options.tools } : {}),
+        ...(options.vault ? { credentials: options.vault.offers } : {}),
         outputRoot: options.fileRoot,
         onStep: (note) => {
           log(`  ${note}`);
@@ -684,6 +707,86 @@ async function ensureWorkspace(options: NellOptions, scope: AccessScope): Promis
       scope.workspaceId,
     ]);
   }).catch(() => undefined);
+}
+
+/**
+ * `/vault`, `/vault add [site]`, `/vault forget <n>`.
+ *
+ * Listing and forgetting happen here, in the chat, because neither involves a
+ * secret — a label and a site name are not worth a round trip to a browser.
+ * *Adding* is the one that leaves: it returns a link rather than asking the
+ * question, because the answer to that question would be a password, and a
+ * password typed into a chat has been sent to a company before anyone can delete
+ * it. The link goes to a page this process serves on loopback.
+ *
+ * The numbers are positions in the list just shown, not ids. An id is a UUID and
+ * asking someone to retype one from a phone is asking them to make a mistake in
+ * the one place where the consequence is deleting the wrong credential.
+ */
+async function vaultCommand(
+  options: NellOptions,
+  scope: AccessScope,
+  objective: string
+): Promise<string> {
+  const vault = options.vault;
+  if (!vault) {
+    return [
+      "The vault is switched off — this install has no encryption key, so there is",
+      "nowhere safe to keep a password and I will not keep one anywhere else.",
+      "",
+      "To turn it on, set SECRET_ENCRYPTION_KEY and restart me:",
+      "openssl rand -base64 32",
+    ].join("\n");
+  }
+
+  const [, verb = "", ...rest] = objective.split(/\s+/u);
+  const items = await vault.list(scope);
+
+  if (verb.toLowerCase() === "add") {
+    /**
+     * Minted only when asked for, and it expires.
+     *
+     * A standing URL that adds credentials to your vault is a standing URL that
+     * adds credentials to your vault, and it would sit in a chat history forever.
+     */
+    const url = vault.link(scope, rest[0]);
+    return [
+      `Open this on the computer I'm running on: ${url}`,
+      "",
+      "It works once and expires in ten minutes. Typing the password there instead of",
+      "here means it goes straight into the vault without passing through Telegram.",
+    ].join("\n");
+  }
+
+  if (verb.toLowerCase() === "forget") {
+    const index = Number(rest[0]);
+    const target = Number.isInteger(index) ? items[index - 1] : undefined;
+    if (!target) return "Send /vault to see the list, then /vault forget with a number from it.";
+    const gone = await vault.forget(scope, target.id);
+    return gone ? `Forgotten: ${target.label}.` : "That one was already gone.";
+  }
+
+  if (items.length === 0) {
+    return [
+      "Nothing saved yet. Send /vault add to store a login — I'll give you a link to",
+      "type it into, so it never goes through this chat.",
+      "",
+      "Once one is saved I can sign in to that site myself. I only ever see a label;",
+      "the password is typed into the page without passing through me.",
+    ].join("\n");
+  }
+
+  return [
+    "Saved logins:",
+    ...items.map(
+      (item, index) =>
+        `${String(index + 1)}. ${item.label}${item.accountHint ? ` — ${item.accountHint}` : ""} (${item.origins
+          .map((origin) => origin.replace(/^https?:\/\//u, ""))
+          .join(", ")})`
+    ),
+    "",
+    "/vault add to store another · /vault forget <number> to remove one.",
+  ].join("\n");
 }
 
 /**

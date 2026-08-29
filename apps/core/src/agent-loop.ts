@@ -28,6 +28,7 @@ import { renderFindings, searchWeb, type SearchProvider } from "@nell/integratio
 import type { BrowserExecutor } from "@nell/aegis";
 import { detectBlock, explainBlock, type BrowserProvider, type PageSnapshot } from "@nell/browser";
 import type { AccessScope } from "@nell/shared";
+import type { CredentialOffer } from "./vault-secrets.js";
 
 export interface LoopDeps {
   readonly provider: BrowserProvider;
@@ -39,6 +40,18 @@ export interface LoopDeps {
    * navigating, which is what search engines block.
    */
   readonly search?: SearchProvider;
+  /**
+   * What is stored for the site the browser is currently on.
+   *
+   * A function rather than a list, and consulted every turn, because the answer
+   * changes with every navigation — that is the whole design. Asked with the URL
+   * from the snapshot just taken, so it describes where the browser *is* rather
+   * than where anyone expected it to end up.
+   *
+   * Absent when this install has no vault key, in which case the agent behaves
+   * exactly as it did before: it reaches a sign-in and says so.
+   */
+  readonly credentials?: (origin: string) => Promise<readonly CredentialOffer[]>;
   /** Injected so a stall can be tested without waiting five minutes. */
   readonly clock?: () => number;
 }
@@ -413,6 +426,19 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
       continue;
     }
 
+    /**
+     * Asked from the snapshot's own URL, every turn.
+     *
+     * Not once at the start and not from the objective: a task that begins on a
+     * search page and arrives at an airline three navigations later needs the
+     * airline's credential at the airline, and nowhere before it. Deriving the
+     * origin from the page just read is also what keeps this honest — there is no
+     * step where anything states which site it *believes* it is on.
+     */
+    const credentials = deps.credentials
+      ? await deps.credentials(originOf(snapshot.url)).catch(() => [])
+      : [];
+
     const planned = await planNext({
       provider: deps.model,
       model: deps.modelId,
@@ -422,6 +448,7 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
       findings,
       outstanding,
       instructions,
+      ...(credentials.length > 0 ? { credentials } : {}),
       ...(request.profile ? { profile: request.profile } : {}),
     });
 
@@ -867,6 +894,23 @@ async function lookAndAct(
     outcome: { ok: false, steps: state.step, reason: "" },
     ...(planned.plan.answer.trim() ? { answer: planned.plan.answer.trim() } : {}),
   };
+}
+
+/**
+ * The origin of a page, for asking the vault what it holds.
+ *
+ * Scheme and host, nothing else — the same shape the allowlist is stored in, so
+ * the listing the model is shown and the check the executor later runs are
+ * answering the same question. An unparseable URL yields an empty string, which
+ * matches no allowlist, so the failure is "no credentials offered" rather than
+ * "credentials offered for a page nobody could identify".
+ */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
 }
 
 /** The host of a URL, or the URL itself when it will not parse. */

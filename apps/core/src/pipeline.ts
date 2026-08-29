@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { runLoop } from "./agent-loop.js";
 import type { StoredFile } from "./documents.js";
 import { humanise } from "./failure.js";
+import type { CredentialOffer } from "./vault-secrets.js";
 
 export interface PipelineDeps {
   readonly browser: BrowserProvider;
@@ -36,6 +37,17 @@ export interface PipelineDeps {
   readonly modelId: string;
   /** Passed to the browser loop, which still searches on its own behalf. */
   readonly search?: SearchProvider;
+  /**
+   * What the vault holds for whichever page the browser reaches.
+   *
+   * Only the browse step gets this. The assist step runs a model against the
+   * public web with no session and no site to be signed in to, so a credential
+   * there would have nowhere to go and nothing to protect it.
+   */
+  readonly credentials?: (
+    scope: AccessScope,
+    origin: string
+  ) => Promise<readonly CredentialOffer[]>;
   /**
    * The key and model the assist step uses.
    *
@@ -201,6 +213,11 @@ export async function runPipeline(
             model: deps.model,
             modelId: deps.modelId,
             ...(deps.search ? { search: deps.search } : {}),
+            ...(deps.credentials
+              ? {
+                  credentials: (origin: string) => deps.credentials!(request.scope, origin),
+                }
+              : {}),
           },
           {
             scope: request.scope,

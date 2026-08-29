@@ -63,6 +63,7 @@ export {
   type ExecuteOutcome,
   type ExecuteRequest,
   type ExecutorOptions,
+  type SecretSource,
   type SessionDriver,
 } from "./executor.js";
 
