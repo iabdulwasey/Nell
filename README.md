@@ -157,7 +157,8 @@ side of that line each piece falls on.
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | **Vault**                 | AES-256-GCM, per-item AAD binding, key rotation, `Secret<T>` that redacts itself, CVC never stored                    |
 | **Policy chokepoint**     | One executor both perception modes pass through — a pixel click meets the same gates as a targeted one                |
-| **Spend**                 | Approvals bound to a payload hash: single-use, short-TTL, invalidated by any change to items, options or total        |
+| **Spend**                 | A click that commits money is refused at the chokepoint until you say yes — pixel clicks included                     |
+| **Approvals**             | Bound to what you were shown: single-use, and consent for £18.50 is not consent for £95.00                            |
 | **Virtual cards**         | Single-use card per purchase, capped at the approved total — a limit the card network enforces, not our code          |
 | **Untrusted content**     | Provenance gate + quarantined readers; a turn whose only new context is email or web text cannot act                  |
 | **2FA**                   | Vaulted TOTP (verified against RFC 6238 vectors) and per-use scoped code reads that return digits and nothing else    |
@@ -183,6 +184,15 @@ vault, virtual cards, TOTP, the audit chain, the handoff link and the dashboard
 all work and are covered, and nothing in the running agent calls them yet. They
 are listed here because the boundaries are real, not because you can use them
 today.
+
+The spend gate was in that list until recently, and it is worth saying what
+changed. The approval machinery had been built and tested since Phase 0 and
+nothing in the agent ever called it: what actually stopped a live booking at the
+payment page was the model saying it should stop. That is obedience, and this
+project's whole claim is that it does not rely on obedience. A click that
+commits money now meets the gate before it reaches the page — through either
+sense, since a gate covering only one is a gate the agent walks around by
+changing how it sees.
 
 ### Not built yet
 

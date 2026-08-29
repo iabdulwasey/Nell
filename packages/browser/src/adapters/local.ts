@@ -22,6 +22,7 @@ import {
 import type { PageSnapshot } from "../perception.js";
 import {
   MODEL_DISPLAY,
+  toViewport,
   type ComputerAction,
   type CoordinateSpace,
   type DisplaySize,
@@ -357,6 +358,64 @@ export class LocalBrowserProvider implements BrowserProvider {
     const live = this.#require(scope, sessionId);
     live.snapshotVersion += 1;
     return snapshotPage(live.page, live.snapshotVersion, maxNodes);
+  }
+
+  /**
+   * What a click would hit, in words.
+   *
+   * The spend gate reads this to decide whether a click commits money, so it
+   * runs on the click path and has to be cheap and total: it never throws, and
+   * an element it cannot describe comes back as an empty string, which the gate
+   * treats as not-a-purchase.
+   *
+   * Accessible name first, then visible text. A payment button is usually a
+   * `<button>` with text, but the ones that are an icon plus an `aria-label`
+   * are exactly the ones worth catching.
+   */
+  async labelOf(
+    scope: AccessScope,
+    sessionId: string,
+    target:
+      | { readonly kind: "target"; readonly target: Target }
+      | { readonly kind: "point"; readonly x: number; readonly y: number }
+  ): Promise<string> {
+    const live = this.#require(scope, sessionId);
+
+    try {
+      if (target.kind === "target") {
+        const locator = locate(live.page, target.target, live.snapshotVersion);
+        const aria = await locator.getAttribute("aria-label", { timeout: 2000 });
+        if (aria?.trim()) return aria;
+        const value = await locator.getAttribute("value", { timeout: 2000 });
+        const text = (await locator.textContent({ timeout: 2000 })) ?? "";
+        return text.trim() || (value ?? "");
+      }
+
+      /**
+       * A pixel click needs the element under the point.
+       *
+       * Coordinates arrive in the model's display space and the page is in
+       * viewport space, so the same projection the click will use has to be
+       * applied here — reading the label of a different element than the one
+       * about to be pressed would be worse than reading none.
+       *
+       * `closest` walks up from whatever fragment is on top: a click usually
+       * lands on the span inside the button, and the words are on the button.
+       */
+      const point = toViewport(this.coordinateSpace(), { x: target.x, y: target.y });
+      const label = await live.page.evaluate(
+        `(() => {
+          const at = document.elementFromPoint(${String(point.x)}, ${String(point.y)});
+          if (!at) return "";
+          const el = at.closest('button,a,[role="button"],input[type="submit"]') || at;
+          return (el.getAttribute('aria-label') || el.textContent || el.value || '').trim();
+        })()`
+      );
+      return typeof label === "string" ? label : "";
+    } catch {
+      // Never throws: the gate's contract is that unreadable is not unusable.
+      return "";
+    }
   }
 
   async currentOrigin(scope: AccessScope, sessionId: string): Promise<string> {

@@ -48,6 +48,15 @@ const browser = new LocalBrowserProvider({ headless: process.env["NELL_HEADED"] 
 const sessions = new WorkspaceSessions({ provider: browser, startUrl });
 
 /**
+ * One chokepoint for the life of the process.
+ *
+ * It holds taint state and spend approvals, and both belong to the session
+ * rather than to a task — a password filled during one task is still filled
+ * during the next, on the same open page.
+ */
+const executor = new BrowserExecutor({ driver: browser });
+
+/**
  * A search vendor, not a model choice.
  *
  * Reachable with an Anthropic key in the same way Brave's is reachable with a
@@ -88,7 +97,7 @@ const ticking = resolvedModel.ok
         pool,
         browser,
         sessions,
-        executor: new BrowserExecutor({ driver: browser }),
+        executor,
         model: resolvedModel.provider,
         modelId,
         ...(search ? { search } : {}),
@@ -111,6 +120,7 @@ await run(
     telegramToken: token!,
     knownSenders: new Map([[owner!, `tg-${owner!}`]]),
     sessions,
+    executor,
     ...(search ? { search } : {}),
     log: (line) => {
       console.log(line);

@@ -25,7 +25,9 @@ import {
   operationClassOfComputerAction,
   type BrowserAction,
   type ComputerAction,
+  type Target,
 } from "@nell/browser";
+import { askBeforeSpending, commitsMoney } from "./commits-money.js";
 import {
   AGENT_IN_CONTROL,
   handOverControl,
@@ -68,6 +70,31 @@ export interface SessionDriver {
   ): Promise<DriverResult>;
 
   currentOrigin(scope: AccessScope, sessionId: string): Promise<string>;
+
+  /**
+   * The visible label of what a click would hit.
+   *
+   * Required, not optional. An optional method here would be a gate any adapter
+   * could switch off by not implementing it — and this codebase has already
+   * shipped one gate that failed open by omission, which is not a mistake worth
+   * making twice in the same repository.
+   *
+   * A driver that cannot answer should return an empty string rather than
+   * throw. Unreadable is treated as not-a-purchase, deliberately: a gate that
+   * refuses everything it cannot read refuses every click on a page it cannot
+   * read, and that is a broken agent rather than a safe one.
+   */
+  labelOf(
+    scope: AccessScope,
+    sessionId: string,
+    target:
+      | { readonly kind: "target"; readonly target: Target }
+      | {
+          readonly kind: "point";
+          readonly x: number;
+          readonly y: number;
+        }
+  ): Promise<string>;
 }
 
 export interface DriverOptions {
@@ -101,6 +128,11 @@ export type ExecuteOutcome =
       readonly reason: string;
       /** Index of the action that was refused, so the worker can retry the rest. */
       readonly refusedAt: number;
+      /**
+       * Set when the refusal is "a person must say yes", rather than "this is not
+       * allowed". The caller shows it to the user instead of reporting a failure.
+       */
+      readonly needsApproval?: boolean;
       readonly taint: TaintState;
     };
 
@@ -198,6 +230,107 @@ export class BrowserExecutor {
   }
 
   /**
+   * Purchases the user has said yes to, by the exact label they were shown.
+   *
+   * Session-scoped and consumed on use, so an approval buys one click and does
+   * not linger for the next page that happens to have a Pay button.
+   */
+  readonly #approved = new Map<string, string>();
+
+  /**
+   * The user said yes.
+   *
+   * Takes the label they were shown rather than a bare "approved", so consent
+   * cannot be transferred to a different button — including the same button
+   * after the total on it has changed.
+   */
+  approveSpend(sessionId: string, label: string): void {
+    this.#approved.set(sessionId, label.trim().replaceAll(/\s+/gu, " ").slice(0, 200));
+  }
+
+  /** Withdraw an approval that was never used. */
+  revokeSpend(sessionId: string): void {
+    this.#approved.delete(sessionId);
+  }
+
+  /**
+   * Whether anything in this batch commits money without an approval.
+   *
+   * Returns the sentence to send the user, or undefined to proceed. Only clicks
+   * are examined: nothing else in either vocabulary can complete a purchase, and
+   * asking the page about every scroll would cost a round trip per step for
+   * nothing.
+   */
+  async #spendCheck(
+    scope: AccessScope,
+    sessionId: string,
+    request: ExecuteRequest
+  ): Promise<string | undefined> {
+    // An approval already granted for this session covers this batch. The token
+    // itself is single-use and payload-bound; this is only the question of
+    // whether one is present.
+    const approved = this.#approved.get(sessionId);
+
+    const clicks: (
+      | { readonly kind: "target"; readonly target: Target }
+      | {
+          readonly kind: "point";
+          readonly x: number;
+          readonly y: number;
+        }
+    )[] = [];
+
+    if (request.kind === "targeted") {
+      for (const action of request.actions) {
+        if (action.action === "click") clicks.push({ kind: "target", target: action.target });
+        if (action.action === "click-at") {
+          clicks.push({ kind: "point", x: action.x, y: action.y });
+        }
+      }
+    } else {
+      for (const action of request.actions) {
+        if (
+          action.action === "left_click" ||
+          action.action === "double_click" ||
+          action.action === "triple_click"
+        ) {
+          clicks.push({ kind: "point", x: action.coordinate.x, y: action.coordinate.y });
+        }
+      }
+    }
+
+    for (const click of clicks) {
+      // A driver that cannot read the page returns "", which is not a purchase.
+      // Stated in the port: unreadable must not mean unusable.
+      const label = await this.#driver.labelOf(scope, sessionId, click).catch(() => "");
+      const verdict = commitsMoney(label);
+      if (!verdict.commits) continue;
+
+      /**
+       * The approval is bound to the label, and consumed by using it.
+       *
+       * Saying yes to "Pay £18.50" is not saying yes to "Pay £95.00", and a
+       * page can change between the question and the answer — that is one of
+       * the attacks the payload-bound token was built for. This is the same
+       * idea at the only granularity a click has: the words on the button.
+       *
+       * Weaker than the itemised payload hash, and worth naming as such. The
+       * strong version needs an itemised total, which a click does not carry;
+       * where one exists — a virtual card issued against an approved payload —
+       * that is the guarantee, and this is the gate in front of it.
+       */
+      if (approved !== undefined && approved === (verdict.label ?? label)) {
+        this.#approved.delete(sessionId);
+        continue;
+      }
+
+      return askBeforeSpending(verdict.label ?? label);
+    }
+
+    return undefined;
+  }
+
+  /**
    * Execute a batch under policy.
    *
    * Every action is authorized before ANY action runs. A batch is refused whole
@@ -233,6 +366,28 @@ export class BrowserExecutor {
 
       await this.#deny(scope, sessionId, operation, decision.reason);
       return { ok: false, reason: decision.reason, refusedAt: index, taint };
+    }
+
+    /**
+     * The click that spends the money.
+     *
+     * Checked here, before anything runs, because here is the only place both
+     * senses pass through — a pixel click at a coordinate and a targeted click
+     * on a ref reach this same line, and a gate that only covered one of them
+     * would be a gate the agent could walk around by changing how it sees.
+     *
+     * The spend machinery has existed since Phase 0 and nothing ever called it.
+     * What actually stopped a live booking at the payment page was the model
+     * saying it should stop — obedience, which is the one thing this file exists
+     * to not depend on.
+     *
+     * A refusal is not a failure: it is the task arriving at the point where a
+     * person has to say yes.
+     */
+    const spend = await this.#spendCheck(scope, sessionId, request);
+    if (spend) {
+      await this.#deny(scope, sessionId, "click", spend);
+      return { ok: false, reason: spend, refusedAt: 0, taint, needsApproval: true };
     }
 
     // Masking is derived from live taint, never from a caller's argument, so a

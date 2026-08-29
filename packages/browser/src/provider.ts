@@ -23,7 +23,7 @@ export interface CaptureOptions {
   /** Selectors holding filled secrets, masked before a capture is encoded. */
   readonly maskSelectors?: readonly string[];
 }
-import type { BrowserAction } from "./dsl.js";
+import type { BrowserAction, Target } from "./dsl.js";
 
 export interface BrowserSession {
   readonly id: string;
@@ -99,6 +99,26 @@ export interface BrowserProvider {
    * tell a model what resolution it is looking at; getting it wrong makes every
    * click land short.
    */
+  /**
+   * The visible label of what a click would hit.
+   *
+   * Read by the spend gate before any click runs, so it must be cheap and must
+   * never throw — an element it cannot describe comes back as an empty string,
+   * which the gate treats as not-a-purchase.
+   *
+   * Declared here rather than only on the policy layer's port because that port
+   * is satisfied structurally by this one: leaving it out would let an adapter
+   * exist that cannot be gated, which is the same fail-open-by-omission this
+   * repository has already shipped once.
+   */
+  labelOf(
+    scope: AccessScope,
+    sessionId: string,
+    target:
+      | { readonly kind: "target"; readonly target: Target }
+      | { readonly kind: "point"; readonly x: number; readonly y: number }
+  ): Promise<string>;
+
   coordinateSpace(): CoordinateSpace;
 
   /**

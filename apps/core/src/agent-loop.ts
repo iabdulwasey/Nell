@@ -161,6 +161,14 @@ export type LoopOutcome =
       readonly reason: string;
       readonly stuck?: boolean;
       /**
+       * The task stopped at a payment and needs a person to say yes.
+       *
+       * Distinct from a failure, and the caller must treat it as such: reporting
+       * "that didn't work" when the truth is "I stopped where the money starts"
+       * describes the safety feature as a fault.
+       */
+      readonly needsApproval?: boolean;
+      /**
        * The technical cause, for the log. Never sent to the user — the whole
        * point of `reason` is that it is written for a person.
        */
@@ -630,7 +638,12 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
 
     if (!outcome.ok) {
       // A refusal is the policy engine working, and it is the user's business.
-      return { ok: false, steps: step, reason: outcome.reason };
+      return {
+        ok: false,
+        steps: step,
+        reason: outcome.reason,
+        ...(outcome.needsApproval ? { needsApproval: true } : {}),
+      };
     }
   }
 
@@ -838,7 +851,15 @@ async function lookAndAct(
 
   if (!acted.ok) {
     // A refusal is the policy engine working, and it is the user's business.
-    return { done: true, outcome: { ok: false, steps: state.step, reason: acted.reason } };
+    return {
+      done: true,
+      outcome: {
+        ok: false,
+        steps: state.step,
+        reason: acted.reason,
+        ...(acted.needsApproval ? { needsApproval: true } : {}),
+      },
+    };
   }
 
   return {

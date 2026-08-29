@@ -17,6 +17,8 @@ const SESSION = "session-1";
 
 class FakeDriver implements SessionDriver {
   origin = "https://bank.example";
+  /** What a click would hit. Empty by default: most tests are not about spending. */
+  label = "";
   /** What the executor actually asked the browser to mask. */
   lastOptions: DriverOptions | undefined;
   targeted: BrowserAction[][] = [];
@@ -47,6 +49,10 @@ class FakeDriver implements SessionDriver {
 
   async currentOrigin(): Promise<string> {
     return this.origin;
+  }
+
+  async labelOf(): Promise<string> {
+    return this.label;
   }
 }
 
@@ -430,5 +436,151 @@ describe("while a person is driving", () => {
 
   it("starts with the agent in control", () => {
     expect(executor.controlOf("fresh-session").holder).toBe("agent");
+  });
+});
+
+/**
+ * The gate that makes "it asks first" true in code.
+ *
+ * The spend machinery has existed since Phase 0 and nothing in the agent ever
+ * called it. What stopped a live booking at the payment page was the model
+ * saying it should stop — obedience, which is the one thing this file exists to
+ * not depend on.
+ */
+describe("clicking something that spends money", () => {
+  it("refuses a targeted click on a payment button", async () => {
+    const driver = new FakeDriver();
+    driver.label = "Pay £18.50";
+    const executor = new BrowserExecutor({ driver });
+
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [{ action: "click", target: { by: "text", text: "Pay" } }],
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      // Named, so the user can answer the question they are being asked.
+      expect(outcome.reason).toContain("Pay £18.50");
+      // A refusal that is a question, not a failure.
+      expect(outcome.needsApproval).toBe(true);
+    }
+    // And nothing reached the page.
+    expect(driver.targeted).toHaveLength(0);
+  });
+
+  /**
+   * The load-bearing one. A gate that covered only the structured sense would be
+   * a gate the agent walks around by changing how it sees — and vision drives by
+   * coordinates, where there is no target to inspect at all.
+   */
+  it("refuses a pixel click on the same button", async () => {
+    const driver = new FakeDriver();
+    driver.label = "Place your order";
+    const executor = new BrowserExecutor({ driver });
+
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "computer",
+      actions: [{ action: "left_click", coordinate: { x: 400, y: 700 }, modifiers: [] }],
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(driver.computer).toHaveLength(0);
+  });
+
+  it("lets an ordinary click through", async () => {
+    const driver = new FakeDriver();
+    driver.label = "Add to basket";
+    const executor = new BrowserExecutor({ driver });
+
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [{ action: "click", target: { by: "text", text: "Add to basket" } }],
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(driver.targeted).toHaveLength(1);
+  });
+
+  it("proceeds once the user has approved that exact button", async () => {
+    const driver = new FakeDriver();
+    driver.label = "Pay £18.50";
+    const executor = new BrowserExecutor({ driver });
+
+    executor.approveSpend("s1", "Pay £18.50");
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [{ action: "click", target: { by: "text", text: "Pay" } }],
+    });
+
+    expect(outcome.ok).toBe(true);
+  });
+
+  /**
+   * Saying yes to "Pay £18.50" is not saying yes to "Pay £95.00". A page can
+   * change between the question and the answer, which is one of the attacks the
+   * payload-bound token was built for — this is the same idea at the only
+   * granularity a click has.
+   */
+  it("does not carry an approval over to a different amount", async () => {
+    const driver = new FakeDriver();
+    driver.label = "Pay £18.50";
+    const executor = new BrowserExecutor({ driver });
+
+    executor.approveSpend("s1", "Pay £18.50");
+    driver.label = "Pay £95.00";
+
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [{ action: "click", target: { by: "text", text: "Pay" } }],
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toContain("£95.00");
+  });
+
+  /** An approval buys one click, not a session. */
+  it("consumes the approval, so the next payment asks again", async () => {
+    const driver = new FakeDriver();
+    driver.label = "Pay £18.50";
+    const executor = new BrowserExecutor({ driver });
+
+    executor.approveSpend("s1", "Pay £18.50");
+    expect(
+      (
+        await executor.execute(scope, "s1", {
+          kind: "targeted",
+          actions: [{ action: "click", target: { by: "text", text: "Pay" } }],
+        })
+      ).ok
+    ).toBe(true);
+
+    const second = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [{ action: "click", target: { by: "text", text: "Pay" } }],
+    });
+    expect(second.ok).toBe(false);
+  });
+
+  /**
+   * A batch is refused whole. Discovering the refusal three clicks into a
+   * checkout leaves the page in a state neither the agent nor the user can
+   * reason about.
+   */
+  it("refuses the whole batch when a later click spends", async () => {
+    const driver = new FakeDriver();
+    driver.label = "Complete purchase";
+    const executor = new BrowserExecutor({ driver });
+
+    const outcome = await executor.execute(scope, "s1", {
+      kind: "targeted",
+      actions: [
+        { action: "type", target: { by: "text", text: "Email" }, text: "a@b.c", clearFirst: true },
+        { action: "click", target: { by: "text", text: "Complete purchase" } },
+      ],
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(driver.targeted).toHaveLength(0);
   });
 });

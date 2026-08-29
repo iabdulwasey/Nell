@@ -48,6 +48,20 @@ export interface NellOptions {
   /** The workspace's long-lived browser. Outlives any one task, by design. */
   readonly sessions: WorkspaceSessions;
   /**
+   * The policy chokepoint, held for the life of the process rather than built
+   * per task.
+   *
+   * Not tidiness. The executor holds the taint state — which fields on this
+   * session have had a credential typed into them — and the session outlives
+   * the task. A fresh executor each task forgot that a password had been filled
+   * a minute earlier, on a page still open in the same browser, which quietly
+   * unblocked the reads the taint machine exists to block.
+   *
+   * It also holds spend approvals, so the "yes" that answers a payment question
+   * has to reach the same instance that refused the click.
+   */
+  readonly executor: BrowserExecutor;
+  /**
    * Optional. Without it the agent must reach every page by navigating, and
    * search engines serve automated browsers a captcha — so research tasks fail
    * on the way to the results rather than on the results.
@@ -73,6 +87,12 @@ export interface Live {
   readonly steering?: () => readonly string[];
   /** Aborts the task between steps. */
   readonly signal?: AbortSignal;
+  /**
+   * Called when a task stops at a payment, with the exact button it stopped at.
+   * The caller keeps it so a later "yes" can be bound to that button and nothing
+   * else.
+   */
+  readonly onApprovalNeeded?: (label: string, sessionId: string) => void;
 }
 
 export async function handleMessage(
@@ -154,8 +174,20 @@ export async function handleMessage(
    * the task that asked it, which is what `routeMessage` is for.
    */
   if (isBareReply(objective)) {
-    await reply("Anything you need?");
-    return undefined;
+    /**
+     * Unless something is waiting on exactly this word.
+     *
+     * "Yes" is small talk when nothing was asked and consent when something was
+     * — and a payment question is the case where getting that backwards is
+     * worst: the task sits parked forever while the user is told "Anything you
+     * need?" in reply to the approval they just gave.
+     */
+    await ensureWorkspace(options, scope);
+    const pending = await withWorkspace(options.pool, scope, (client) => peek(client, scope));
+    if (!pending) {
+      await reply("Anything you need?");
+      return undefined;
+    }
   }
 
   const resolved = providerFor(options.modelId, options.keys);
@@ -206,6 +238,17 @@ export async function handleMessage(
    */
   const parked = await withWorkspace(options.pool, scope, (client) => peek(client, scope));
   if (parked) {
+    /**
+     * A yes to a payment resumes the task rather than starting a new one.
+     *
+     * The approval itself was granted before this ran — it has to be in place
+     * before the click is retried, or the very turn it was approved for would
+     * be refused again.
+     */
+    if (affirmative(objective)) {
+      return resumeParked(options, message, scope, resolved.provider, live);
+    }
+
     const place = await resolvePlace(objective);
     if (place) {
       await withWorkspace(options.pool, scope, (client) =>
@@ -328,13 +371,16 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
 
   let outcome: LoopOutcome;
 
+  let sessionId: string | undefined;
+
   try {
     const session = await options.sessions.acquire(run.scope);
+    sessionId = session.id;
 
     outcome = await runLoop(
       {
         provider: options.browser,
-        executor: new BrowserExecutor({ driver: options.browser }),
+        executor: options.executor,
         model: run.model,
         modelId: options.modelId,
         ...(options.search ? { search: options.search } : {}),
@@ -380,6 +426,27 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
   // The answer if there is one, and what was done if the task had no answer to
   // give. Never both: prefixing the result with "Done — I searched three sites"
   // buries it, and the result is the only part anyone asked for.
+  /**
+   * Stopping at a payment is not a failure, and must not be reported as one.
+   *
+   * The task is parked rather than closed, so a "yes" resumes it from where it
+   * stopped instead of starting the whole booking again — which would be both
+   * slow and a second chance to get a different price.
+   */
+  if (!outcome.ok && outcome.needsApproval) {
+    await withWorkspace(options.pool, run.scope, (client) =>
+      park(client, run.scope, {
+        id: run.taskId,
+        objective: run.objective,
+        threadRef: run.threadRef,
+      })
+    );
+    run.live?.onApprovalNeeded?.(labelIn(outcome.reason), sessionId ?? "");
+    log(`  → ${outcome.reason.slice(0, 160)}`);
+    await reply(outcome.reason);
+    return outcome;
+  }
+
   const said = outcome.ok ? outcome.answer || `Done — ${outcome.summary}` : outcome.reason;
 
   /**
@@ -423,6 +490,32 @@ async function resumeParked(
   });
 }
 
+/**
+ * Is this a yes?
+ *
+ * Deliberately narrow. A payment is the one place where reading "sure, but
+ * check the date first" as consent would be unrecoverable, so anything that is
+ * not plainly an affirmative is treated as not one — and the cost of being
+ * wrong in that direction is one more question.
+ */
+function affirmative(text: string): boolean {
+  return /^(yes|yep|yeah|yup|ok|okay|sure|go ahead|do it|confirm(ed)?|approved?|book it|buy it)\b[\s.!]*$/iu.test(
+    text.trim()
+  );
+}
+
+/**
+ * The button out of an approval question.
+ *
+ * `askBeforeSpending` builds the sentence, so this reads it back rather than
+ * threading the label through every layer between the gate and the channel. It
+ * is the same module's format on both sides, which is why matching on it is
+ * reasonable here and would not be if a model had written the string.
+ */
+function labelIn(question: string): string {
+  return /"([^"]+)"/u.exec(question)?.[1] ?? "";
+}
+
 async function ensureWorkspace(options: NellOptions, scope: AccessScope): Promise<void> {
   await withWorkspace(options.pool, scope, async (client) => {
     await client.query(`INSERT INTO workspaces (id) VALUES ($1) ON CONFLICT DO NOTHING`, [
@@ -446,6 +539,20 @@ interface Running {
 }
 
 /**
+ * A payment the agent stopped at, waiting for a person.
+ *
+ * Held in memory on purpose: an approval that survived a restart would be a
+ * "yes" outliving the page it was given about, and the page is where the price
+ * is. Losing it costs one repeated question.
+ */
+interface AwaitingApproval {
+  readonly workspaceId: string;
+  /** The exact button, so consent cannot be transferred to a different one. */
+  readonly label: string;
+  readonly sessionId: string;
+}
+
+/**
  * Read and work at the same time.
  *
  * The poll and the worker are separate loops on purpose. Awaiting a task before
@@ -462,6 +569,7 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
   const log = options.log ?? (() => undefined);
   const inbox: InboundMessage[] = [];
   let running: Running | undefined;
+  let waiting: AwaitingApproval | undefined;
 
   log("listening on Telegram");
 
@@ -537,13 +645,34 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
 
     const abort = new AbortController();
     const steering: string[] = [];
-    running = message.userId
-      ? { workspaceId: accessScopeForUser(message.userId).workspaceId, steering, abort }
-      : undefined;
+    const workspaceId = message.userId ? accessScopeForUser(message.userId).workspaceId : undefined;
+    running = workspaceId ? { workspaceId, steering, abort } : undefined;
+
+    /**
+     * A "yes" that arrived before this task started.
+     *
+     * The message that resumes a parked payment is handled here rather than in
+     * the poll loop, because the executor's approval must be in place *before*
+     * the task runs — granting it afterwards would let the click be refused a
+     * second time on the very turn it was approved for.
+     */
+    if (waiting && workspaceId === waiting.workspaceId && affirmative(message.envelope.text)) {
+      options.executor.approveSpend(waiting.sessionId, waiting.label);
+      log(`  ! approved: ${waiting.label}`);
+      waiting = undefined;
+    } else if (waiting && workspaceId === waiting.workspaceId) {
+      // Anything that is not a yes withdraws it. Silence is not consent, and
+      // neither is a change of subject.
+      options.executor.revokeSpend(waiting.sessionId);
+      waiting = undefined;
+    }
 
     await handleMessage(options, message, {
       steering: () => steering.splice(0, steering.length),
       signal: abort.signal,
+      onApprovalNeeded: (label, sessionId) => {
+        if (workspaceId) waiting = { workspaceId, label, sessionId };
+      },
     }).catch((error: unknown) => {
       log(`  failed: ${error instanceof Error ? error.message : "unknown"}`);
       return undefined;

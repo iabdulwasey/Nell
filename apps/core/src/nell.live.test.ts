@@ -15,6 +15,7 @@
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { BrowserExecutor } from "@nell/aegis";
 import { keysFromEnv } from "@nell/agent";
 import { chromiumAvailable, LocalBrowserProvider } from "@nell/browser/adapters";
 import { Pool } from "pg";
@@ -120,6 +121,7 @@ beforeAll(async () => {
     telegramToken: "test-token",
     knownSenders: new Map([["111", "ada"]]),
     sessions,
+    executor: new BrowserExecutor({ driver: browser }),
   };
 
   // The stub replaces the network for Telegram only; the model and the browser

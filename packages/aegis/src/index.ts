@@ -11,6 +11,7 @@
  * Governed by: docs/security-model.md
  */
 
+export { askBeforeSpending, commitsMoney, type MoneyVerdict } from "./commits-money.js";
 export {
   authorizeSpend,
   DEFAULT_APPROVAL_TTL_MS,
