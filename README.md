@@ -58,19 +58,36 @@ spends money, sends a message, or touches a credential.
   already permanent. Put that URL on its own line and GitHub renders a player.
 -->
 
-### Booking a cinema ticket
+<!--
+  Side by side needs an HTML table and explicit <video> tags. A bare
+  user-attachments URL becomes a player only in plain markdown, on its own line;
+  inside HTML that conversion does not happen and you get a dead link. GitHub's
+  sanitiser does allow <video src controls>, which is what makes this work.
+-->
+<table>
+<tr>
+<td width="50%" valign="top">
 
-https://github.com/user-attachments/assets/2c5e5e99-9fda-48d8-a238-1a214c8a2926
+**Booking a cinema ticket**
 
-_One message on Telegram. Nell searches, finds the cinema, opens the film and
-works through the booking in a real browser._
+<video src="https://github.com/user-attachments/assets/2c5e5e99-9fda-48d8-a238-1a214c8a2926" controls></video>
 
-### Answering from the live web
+One message. Nell finds the cinema, opens the film, picks the seats — and stops
+where the money starts.
 
-<!-- Replace this line with the user-attachments URL for the second video. -->
+</td>
+<td width="50%" valign="top">
 
-_A question goes in on Telegram; Nell searches, reads the pages, and comes back
-with the answer rather than a description of where it got to._
+**Planning a holiday**
+
+<video src="https://github.com/user-attachments/assets/1b72c5d2-a170-438b-9309-22756cb51ff2" controls></video>
+
+Four questions in one sentence — flights, stay, places, activities. It answers
+each rather than finding one page that mentions the subject.
+
+</td>
+</tr>
+</table>
 
 ## Why Nell instead of a closed assistant
 
