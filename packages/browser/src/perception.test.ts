@@ -67,12 +67,36 @@ describe("what a model is shown", () => {
     expect(snapshot.truncated).toBe(true);
   });
 
-  it("flags truncation so the worker knows to scroll rather than conclude", () => {
+  /**
+   * This test used to be called "flags truncation so the worker knows to
+   * scroll", and it asserted the word "truncated" appeared. Both were wrong in
+   * the same way, and the error cost three real tasks: scrolling cannot reveal
+   * more, because every element on the page is collected regardless of where the
+   * viewport is. The limit is a count, not a window.
+   *
+   * So what is asserted now is that the note tells the truth — how much is
+   * missing — and does not suggest the one action that provably cannot help. A
+   * hint that invites an impossible move is worse than no hint, because the
+   * model takes it, sees no change, and takes it again until it is declared
+   * stuck.
+   */
+  it("says how much of the page is missing, and does not suggest scrolling", () => {
     const snapshot = snapshotOf(
       Array.from({ length: MAX_NODES + 10 }, (_, i) => node({ ref: `e${String(i)}` }))
     );
     expect(snapshot.truncated).toBe(true);
-    expect(renderSnapshot(snapshot)).toContain("truncated");
+    expect(snapshot.totalNodes).toBe(MAX_NODES + 10);
+
+    const rendered = renderSnapshot(snapshot);
+    expect(rendered).toContain(String(MAX_NODES));
+    expect(rendered).toContain(String(MAX_NODES + 10));
+    expect(rendered).toContain("whole page");
+    expect(rendered).toContain("will not reveal more");
+
+    // The old note said "scroll or narrow the view". Nothing may tell the model
+    // to scroll in order to see what is already listed.
+    expect(rendered).not.toContain("scroll or narrow");
+    expect(rendered).not.toContain("scroll to see");
   });
 
   it("does not flag truncation on a small page", () => {

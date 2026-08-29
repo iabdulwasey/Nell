@@ -86,6 +86,7 @@ export {
   MAX_NODES,
   MAX_TEXT_CHARS,
   renderSnapshot,
+  truncationNote,
   SCREENSHOT_TOKENS,
   snapshotNodeSchema,
   VISION_AFTER_FAILURES,

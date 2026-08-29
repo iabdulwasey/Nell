@@ -26,6 +26,18 @@ import { z } from "zod";
 export interface ModelMessage {
   readonly role: "user" | "assistant";
   readonly content: string;
+  /**
+   * A screenshot to look at, base64 PNG.
+   *
+   * The one thing the port was missing, and it was the whole reason computer use
+   * sat built and unreachable: the executor already accepts pixel actions and
+   * the browser already performs them, but no model could be *shown* anything.
+   *
+   * Optional, because a provider that cannot see is still a perfectly good
+   * provider for the structured path — a workspace driving with a text-only
+   * model keeps every other capability and loses only this one.
+   */
+  readonly screenshot?: string;
 }
 
 export interface CompletionRequest {
@@ -109,7 +121,21 @@ export function anthropicProvider(apiKey: string, fetchImpl: typeof fetch = fetc
           system: request.system,
           messages: request.messages.map((message) => ({
             role: message.role,
-            content: message.content,
+            /**
+             * Image first, then the words about it.
+             *
+             * Anthropic's guidance, and it is not cosmetic: a model given the
+             * question before the picture tends to answer from the question.
+             */
+            content: message.screenshot
+              ? [
+                  {
+                    type: "image",
+                    source: { type: "base64", media_type: "image/png", data: message.screenshot },
+                  },
+                  { type: "text", text: message.content },
+                ]
+              : message.content,
           })),
           tools: [
             {
@@ -176,7 +202,17 @@ export function openAiCompatibleProvider(
             { role: "system", content: request.system },
             ...request.messages.map((message) => ({
               role: message.role,
-              content: message.content,
+              // The OpenAI-compatible shape for images, which every gateway that
+              // claims compatibility implements.
+              content: message.screenshot
+                ? [
+                    {
+                      type: "image_url",
+                      image_url: { url: `data:image/png;base64,${message.screenshot}` },
+                    },
+                    { type: "text", text: message.content },
+                  ]
+                : message.content,
             })),
           ],
           tools: [

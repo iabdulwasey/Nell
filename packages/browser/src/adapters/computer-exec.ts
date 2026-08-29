@@ -83,7 +83,27 @@ export async function screenshotOf(
   options: CaptureOptions & { readonly fullPage?: boolean } = {}
 ): Promise<string> {
   const mask = (options.maskSelectors ?? []).map((selector) => page.locator(selector));
-  const buffer = await page.screenshot({ fullPage: options.fullPage ?? false, mask });
+  const buffer = await page.screenshot({
+    fullPage: options.fullPage ?? false,
+    mask,
+    /**
+     * Its own budget, and animations stopped.
+     *
+     * Playwright waits for fonts and animations before capturing, which on an
+     * ad-heavy page can outlast the action timeout — a real crash, seen taking
+     * a screenshot of a cinema listings site: `page.screenshot: Timeout 12000ms
+     * exceeded. waiting for fonts to load`. The action timeout is deliberately
+     * short so a missing element is discovered quickly; a capture is a different
+     * operation with a different cost, and inheriting that limit fails the one
+     * thing the looking sense cannot proceed without.
+     *
+     * Animations disabled because a carousel mid-transition is both slower to
+     * settle and worse to reason about than the frame either side of it.
+     */
+    timeout: 30_000,
+    animations: "disabled",
+    caret: "hide",
+  });
   return buffer.toString("base64");
 }
 

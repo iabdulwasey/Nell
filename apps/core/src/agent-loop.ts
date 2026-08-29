@@ -22,7 +22,7 @@
  * than acting on a page that has moved.
  */
 
-import { explainPlanFailure, planNext, type ModelProvider } from "@nell/agent";
+import { explainPlanFailure, planFromScreen, planNext, type ModelProvider } from "@nell/agent";
 import { humanise } from "./failure.js";
 import { renderFindings, searchWeb, type SearchProvider } from "@nell/integrations";
 import type { BrowserExecutor } from "@nell/aegis";
@@ -75,6 +75,17 @@ export const STUCK_AFTER = 3;
  */
 export const MAX_ACTION_FAILURES = 3;
 
+/**
+ * Extra steps granted when the agent switches to looking.
+ *
+ * Escalation is a new approach, not a continuation, and it arrives late by
+ * construction — the structured sense has to fail first. Measured on the task
+ * that prompted this: nine steps spent structurally, three left for vision,
+ * which is not enough to read a page and act on it. Without its own allowance
+ * the second sense is switched on just in time to run out.
+ */
+export const VISION_STEPS = 8;
+
 export type LoopOutcome =
   /**
    * `answer` is what the user asked for; `summary` is what the agent was doing.
@@ -109,7 +120,7 @@ export type LoopOutcome =
  * whoever reads it.
  */
 export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<LoopOutcome> {
-  const limit = request.maxSteps ?? MAX_STEPS;
+  let limit = request.maxSteps ?? MAX_STEPS;
   const history: string[] = [];
   let unchanged = 0;
   let previousFingerprint = "";
@@ -134,6 +145,8 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
   const searched = new Set<string>();
   /** Reset by any step that works, so a wobble mid-task does not count toward a wall. */
   let consecutiveFailures = 0;
+  /** Once the structured sense has stalled, the rest of the task is driven by eye. */
+  let looking = false;
 
   for (let step = 1; step <= limit; step += 1) {
     // A fresh look every time. The previous plan's refs died the moment this
@@ -165,13 +178,37 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     unchanged = fingerprint === previousFingerprint ? unchanged + 1 : 0;
     previousFingerprint = fingerprint;
 
-    if (unchanged >= STUCK_AFTER) {
-      return {
-        ok: false,
-        steps: step,
-        stuck: true,
-        reason: "The page stopped changing, so I was repeating myself rather than making progress.",
-      };
+    /**
+     * The page stopped changing — so look at it instead.
+     *
+     * This used to end the task. It was the most common way a task died, and it
+     * was usually a perception failure rather than a real dead end: the
+     * structured sense collects every element on the page regardless of the
+     * viewport, so scrolling changes nothing it can see. The model would decide
+     * it needed to scroll, scroll, observe no change, and be declared stuck —
+     * three times over, on the same cinema listing, on three different days.
+     *
+     * A screenshot has no such blind spot. Escalating here rather than giving up
+     * is also the right economics: the expensive sense is used only once the
+     * cheap one has demonstrably stopped producing information, which is the
+     * only moment its cost is clearly worth paying.
+     */
+    if (unchanged >= STUCK_AFTER && !looking) {
+      looking = true;
+      unchanged = 0;
+      previousFingerprint = "";
+      limit = step + VISION_STEPS;
+      request.onDiagnostic?.("structured sense stalled; switching to vision");
+      history.push(
+        "Reading the page structurally stopped telling me anything new, so I am looking at the screen."
+      );
+    }
+
+    if (looking) {
+      const seen = await lookAndAct(deps, request, { history, step, profile: request.profile });
+      if (seen.done) return seen.outcome;
+      if (seen.answer) partial = seen.answer;
+      continue;
     }
 
     const planned = await planNext({
@@ -313,6 +350,149 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     ok: false,
     steps: limit,
     reason: partial ? `${ranOut}\n\nWhat I had so far:\n\n${partial}` : ranOut,
+  };
+}
+
+interface LookState {
+  readonly history: string[];
+  readonly step: number;
+  readonly profile?: string;
+}
+
+interface LookResult {
+  readonly done: boolean;
+  readonly outcome: LoopOutcome;
+  readonly answer?: string;
+}
+
+/**
+ * One turn of the looking sense.
+ *
+ * Take a picture, ask what to do, do it. The shape deliberately mirrors the
+ * structured turn above — same bounds, same chokepoint, same treatment of a
+ * refusal — because the guarantee this architecture makes is that *how the agent
+ * sees* has no bearing on *what it is allowed to do*. Instinct booked a table
+ * with a £200 cancellation fee when asked only to find one; that is an
+ * action-selection failure and no amount of perception fixes it, so the gate
+ * that prevents it sits on the far side of both senses.
+ */
+async function lookAndAct(
+  deps: LoopDeps,
+  request: LoopRequest,
+  state: LookState
+): Promise<LookResult> {
+  /**
+   * The driver throws here too, and this did not catch it.
+   *
+   * Found by running it: a screenshot timed out waiting for fonts on a heavy
+   * page and the exception went all the way up, ending the process rather than
+   * the task. The structured turn had guarded this from the start; the looking
+   * turn was written later and inherited the shape without the guard.
+   */
+  let shot;
+  try {
+    shot = await deps.executor.execute(request.scope, request.sessionId, {
+      kind: "computer",
+      actions: [{ action: "screenshot" }],
+    });
+  } catch (error) {
+    const failure = humanise(error);
+    request.onDiagnostic?.(`vision: could not capture — ${failure.detail}`);
+    return {
+      done: true,
+      outcome: { ok: false, steps: state.step, reason: failure.message, detail: failure.detail },
+    };
+  }
+
+  if (!shot.ok) {
+    return { done: true, outcome: { ok: false, steps: state.step, reason: shot.reason } };
+  }
+  if (!shot.result?.screenshot) {
+    // Nothing to look at is not something to keep trying — a session that cannot
+    // produce a picture will not start.
+    return {
+      done: true,
+      outcome: {
+        ok: false,
+        steps: state.step,
+        reason: "I could not get a picture of the page to work from.",
+      },
+    };
+  }
+
+  const space = deps.provider.coordinateSpace();
+  const planned = await planFromScreen({
+    provider: deps.model,
+    model: deps.modelId,
+    objective: request.objective,
+    screenshot: shot.result.screenshot,
+    display: space.display,
+    // The origin, not the full URL: it is what the driver reports, and for
+    // orienting a model it is the part that matters.
+    url: shot.result.currentOrigin,
+    history: state.history,
+    ...(state.profile ? { profile: state.profile } : {}),
+  });
+
+  if (!planned.ok) {
+    const failure = humanise(new Error(planned.reason));
+    request.onDiagnostic?.(`vision: ${planned.reason}`);
+    return {
+      done: true,
+      outcome: { ok: false, steps: state.step, reason: failure.message, detail: failure.detail },
+    };
+  }
+
+  request.onStep?.(planned.plan.reasoning);
+  state.history.push(planned.plan.reasoning);
+
+  if (planned.plan.done) {
+    return {
+      done: true,
+      outcome: {
+        ok: true,
+        steps: state.step,
+        summary: planned.plan.reasoning,
+        answer: planned.plan.answer.trim(),
+      },
+    };
+  }
+
+  if (planned.plan.actions.length === 0) {
+    return {
+      done: true,
+      outcome: {
+        ok: false,
+        steps: state.step,
+        reason: "I could not work out what to do next on this page.",
+      },
+    };
+  }
+
+  let acted;
+  try {
+    acted = await deps.executor.execute(request.scope, request.sessionId, {
+      kind: "computer",
+      actions: planned.plan.actions,
+    });
+  } catch (error) {
+    // Same treatment as the structured path: the page refused, so look again
+    // rather than ending the task on one bad click.
+    const failure = humanise(error);
+    request.onDiagnostic?.(`vision step failed: ${failure.detail}`);
+    state.history.push("That did not work — look again and try a different spot.");
+    return { done: false, outcome: { ok: false, steps: state.step, reason: "" } };
+  }
+
+  if (!acted.ok) {
+    // A refusal is the policy engine working, and it is the user's business.
+    return { done: true, outcome: { ok: false, steps: state.step, reason: acted.reason } };
+  }
+
+  return {
+    done: false,
+    outcome: { ok: false, steps: state.step, reason: "" },
+    ...(planned.plan.answer.trim() ? { answer: planned.plan.answer.trim() } : {}),
   };
 }
 

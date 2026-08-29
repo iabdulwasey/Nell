@@ -9,6 +9,15 @@
  */
 
 export {
+  buildVisionSchema,
+  planFromScreen,
+  visionSchema,
+  VISION_PROMPT,
+  type VisionOutcome,
+  type VisionPlan,
+  type VisionRequest,
+} from "./vision.js";
+export {
   CACHE_DISCOUNT,
   checkBudget,
   costOf,

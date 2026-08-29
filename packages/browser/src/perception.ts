@@ -53,6 +53,16 @@ export interface PageSnapshot {
   /** Visible prose, trimmed. Present when the task needs to read rather than act. */
   readonly text?: string;
   readonly truncated: boolean;
+  /**
+   * How many elements the page actually had.
+   *
+   * Present so the model can be told the truth about what it is missing.
+   * "Truncated" on its own invites guessing at the cause, and the guess that
+   * cost a real task was "scroll to see the rest" — which cannot work, because
+   * the whole page is already collected and the limit is a count, not a
+   * viewport.
+   */
+  readonly totalNodes?: number;
 }
 
 /** Roles worth showing a model. Everything else is layout noise. */
@@ -118,7 +128,32 @@ export function buildSnapshot(input: BuildSnapshotInput): PageSnapshot {
     nodes,
     text,
     truncated: ordered.length > limit || (input.text?.length ?? 0) > MAX_TEXT_CHARS,
+    totalNodes: ordered.length,
   };
+}
+
+/**
+ * What to say when the page did not fit.
+ *
+ * The previous note read "(page truncated; scroll or narrow the view)" and cost
+ * a real task: the model scrolled three times, nothing changed, and the loop
+ * declared it stuck. Scrolling could never have worked — every element on the
+ * page is collected regardless of where the viewport is, so the limit is a
+ * count and not a window onto the page.
+ *
+ * So the note says what is actually true and what actually helps. A hint that
+ * suggests an impossible action is worse than no hint, because the model will
+ * take it, and take it again.
+ */
+export function truncationNote(snapshot: PageSnapshot): string {
+  const shown = snapshot.nodes.length;
+  const total = snapshot.totalNodes ?? shown;
+
+  return (
+    `(showing ${String(shown)} of ${String(total)} elements — you are seeing the whole page, ` +
+    `not just the visible part, so scrolling will not reveal more unless the site loads ` +
+    `content as you scroll. To read past this, use extract.)`
+  );
 }
 
 /** Render a snapshot for a prompt. Compact by construction. */
@@ -134,7 +169,7 @@ export function renderSnapshot(snapshot: PageSnapshot): string {
 
   const header = `${snapshot.title} — ${snapshot.url}`;
   const body = lines.join("\n");
-  const note = snapshot.truncated ? "\n\n(page truncated; scroll or narrow the view)" : "";
+  const note = snapshot.truncated ? `\n\n${truncationNote(snapshot)}` : "";
   const text = snapshot.text ? `\n\n${snapshot.text}` : "";
 
   return `${header}\n\n${body}${text}${note}`;

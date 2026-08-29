@@ -22,6 +22,7 @@
 import {
   actionBatchSchema,
   actionSchema,
+  truncationNote,
   type BrowserAction,
   type PageSnapshot,
 } from "@nell/browser";
@@ -161,6 +162,9 @@ export const SYSTEM_PROMPT = [
   "",
   "The user cannot see the screen. They see only what you write.",
   "",
+  "You see the whole page, not only the part on screen. Scrolling helps only on",
+  "sites that load more as you scroll; it will not reveal anything already listed.",
+  "",
   "You are writing a chat message, not a document. Short paragraphs, bold for",
   "names and figures, `-` for lists. No tables, no headings deeper than one level,",
   "no code fences unless it is code — those survive nowhere. It is rewritten for",
@@ -174,6 +178,10 @@ export const SYSTEM_PROMPT = [
   "When the objective is a question, finding the page is not finishing — reaching",
   "a page with the answer on it and stopping there leaves them with nothing. Read",
   "what you came for off the page and put it in `answer`, in full.",
+  "",
+  "If the thing asked for is not there — no showings, nothing in stock, no such",
+  "page — say that. It is a complete answer, and a better one than continuing to",
+  "look for something that does not exist.",
   "",
   "Set done=true once `answer` holds the result, or once the action is complete.",
   "",
@@ -350,7 +358,7 @@ function renderForPrompt(snapshot: PageSnapshot): string {
   });
 
   const text = snapshot.text ? `\n\n${snapshot.text.slice(0, 4000)}` : "";
-  const truncated = snapshot.truncated ? "\n\n(page truncated — scroll to see more)" : "";
+  const truncated = snapshot.truncated ? `\n\n${truncationNote(snapshot)}` : "";
 
   return `${snapshot.title}\n\n${lines.join("\n")}${text}${truncated}`;
 }
