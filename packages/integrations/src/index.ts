@@ -85,3 +85,22 @@ export {
   type Registration,
   type RegistrationProblem,
 } from "./mcp.js";
+
+export {
+  applyChange,
+  describePlan,
+  likelyMisfiled,
+  mailOperationSchema,
+  planChange,
+  undoChange,
+  BULK_APPROVAL_THRESHOLD,
+  MAX_BATCH,
+  type ApplyOptions,
+  type ApplyOutcome,
+  type MailChange,
+  type MailOperation,
+  type MailWriteProvider,
+  type Plan,
+  type PlanOptions,
+  type UndoRecord,
+} from "./mail-write.js";

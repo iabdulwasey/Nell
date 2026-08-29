@@ -11,6 +11,10 @@
 /** @type {import('next').NextConfig} */
 export default {
   reactStrictMode: true,
+  // The dashboard has no images, and Next's optimiser is the only thing here
+  // that would reach libvips (LGPL). Turning it off means the obligation is
+  // documentary rather than operational — see THIRD_PARTY_NOTICES.md.
+  images: { unoptimized: true },
   // A stray lockfile in a parent directory otherwise makes Next infer the wrong
   // workspace root and trace files from outside the repo.
   outputFileTracingRoot: new URL("../..", import.meta.url).pathname,
