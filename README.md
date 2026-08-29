@@ -32,31 +32,38 @@ spends money, sends a message, or touches a credential.
 ## See it work
 
 <!--
-  HOW TO FILL THESE IN
-  --------------------
-  GitHub only plays video inline when the file is hosted on GitHub itself.
-  A link to Drive, Dropbox or a raw file in this repo will not play.
+  ADDING A VIDEO HERE
+  -------------------
+  Two constraints, both of which will silently reject an upload:
 
-    1. Open any issue or pull-request comment box on this repo
-       (https://github.com/iabdulwasey/Nell/issues/new).
-    2. Drag the .mp4 or .mov into the box and wait for the upload to finish.
-       GitHub replaces it with a URL like
-       https://github.com/user-attachments/assets/xxxxxxxx-xxxx-xxxx
-    3. Copy that URL. Close the issue box WITHOUT posting — the upload is
-       already permanent and does not need the comment.
-    4. Replace the placeholder URL below with it, on its own line.
-       A bare user-attachments URL on its own line renders as a player.
+    Size    10MB for a repo on a free plan (100MB only on paid). This is the
+            one that bites — a 20-second phone screen recording is comfortably
+            over it untouched.
+    Format  .mp4, .mov or .webm, and GitHub recommends H.264 for browser
+            compatibility. iPhone recordings are HEVC by default.
 
-  Keep each clip short and silent-friendly: most people watch a README video
-  muted, on the first pass, before they have read a word of the text.
+  To get a recording under the limit without losing readability:
+
+    ffmpeg -i in.mov -vf "scale=-2:1280" -c:v libx264 -pix_fmt yuv420p \
+           -crf 26 -preset slow -movflags +faststart -c:a aac -b:a 96k out.mp4
+
+  CRF targets a quality rather than a size, which is why it works so well on a
+  screen recording: almost nothing moves between frames, so it spends very few
+  bits. Twenty seconds lands around 6MB at full phone resolution. Raise the CRF
+  toward 30 for smaller, drop `-c:a aac -b:a 96k` entirely if the clip is silent.
+
+  Then: drag the file into any issue comment box on this repo, wait for the
+  upload to finish, and copy the https://github.com/user-attachments/assets/...
+  URL it leaves behind. The comment does not need to be posted — the upload is
+  already permanent. Put that URL on its own line and GitHub renders a player.
 -->
 
-### Booking something, end to end
+### Booking a cinema ticket
 
-<!-- Replace this line with the user-attachments URL for the first video. -->
+https://github.com/user-attachments/assets/2c5e5e99-9fda-48d8-a238-1a214c8a2926
 
-_Nell finds a showing, picks the seats, and stops at the approval — the purchase
-is the one thing it will not do on its own._
+_One message on Telegram. Nell searches, finds the cinema, opens the film and
+works through the booking in a real browser._
 
 ### Answering from the live web
 
@@ -114,12 +121,18 @@ More detail and a full FAQ:
 
 ## Status
 
-**The substrate is built and tested; it is not yet a running assistant.** Every
-boundary below is enforced in code and covered by tests, but nothing is wired to
-a live model, a cloud browser, or a real phone number yet — so it is not
-something you can text today.
+**It runs.** You can text it, and it does the thing — the video above is a real
+task on a real browser, driven by a real model, with the results in a real
+Postgres. Self-hosting it needs a Telegram bot token, a model key and a
+Postgres, and nothing else.
 
-**812 tests · 41 adversarial attacks run on every commit · CI green.**
+What that sentence does not cover, and it is a lot: this is one agent working
+one task at a time on one machine. There is no hosted service, no coordinator
+splitting work across tasks, no cloud browser, and every vendor beyond the
+model and search is still an unbound port. The list below is honest about which
+side of that line each piece falls on.
+
+**1,156 tests · 57 adversarial attacks run on every commit · CI green.**
 
 ### Built and tested
 
@@ -142,19 +155,30 @@ something you can text today.
 | **Models**                | Bring your own: Anthropic, OpenAI, Google, xAI, DeepSeek, GLM, Kimi, Mistral, OpenRouter, or your own hardware        |
 | **Dashboard**             | Tasks, approvals, machine, vault, memory, audit, model settings                                                       |
 | **Durability**            | DBOS crash-resume verified against real Postgres; RLS tenant isolation verified on PostgreSQL 17                      |
+| **Two senses**            | Accessibility tree for speed; when it stops learning anything the agent switches to looking at the screen             |
+| **Search**                | Bound to a live vendor — search engines captcha a headless browser, so searching is not something to do in one        |
+| **Knowing you**           | Asks once where you are, then never again; share a pin on Telegram and it takes that                                  |
+| **Recurring work**        | "Every morning at 6, scan the AI news" — leased, deduped, and it stays quiet when nothing changed                     |
+| **Bounds**                | A task runs while it is getting somewhere and stops when it is not; going round in circles counts as standing still   |
+
+Some of the above is tested but not yet reachable from a chat message — the
+vault, virtual cards, TOTP, the audit chain, the handoff link and the dashboard
+all work and are covered, and nothing in the running agent calls them yet. They
+are listed here because the boundaries are real, not because you can use them
+today.
 
 ### Not built yet
 
 Voice calls · Calendar, Slack, Notion, Linear, GitHub and MCP connectors · email
 write operations · cloud-browser vendor adapter · the desktop companion · hosted
-billing.
+billing · a coordinator that runs more than one task at a time.
 
 The security foundation is deliberately built first: every boundary that protects
 your money and your credentials is enforced in code and covered by tests before
 any capability is layered on top.
 
 The adversarial suite is worth a look if you are evaluating the trust story —
-[`packages/evals/src/attacks.ts`](packages/evals/src/attacks.ts) runs 41 real
+[`packages/evals/src/attacks.ts`](packages/evals/src/attacks.ts) runs 57 real
 attacks against the real gates on every commit, and each one records the incident
 or hazard it guards against. Run it with `pnpm attacks`.
 
