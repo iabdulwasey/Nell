@@ -80,6 +80,26 @@ export async function readProfile(
   return rows.map((row) => toPreference(row, scope.workspaceId));
 }
 
+/**
+ * Remove one fact, by row.
+ *
+ * Deleted rather than superseded, because this is the user striking a line out
+ * of their own memory file rather than the system learning something newer. A
+ * tombstone would keep the fact readable in the very document they just removed
+ * it from.
+ */
+export async function forgetPreferenceRow(
+  client: PoolClient,
+  scope: AccessScope,
+  id: string
+): Promise<boolean> {
+  const { rowCount } = await client.query(
+    `DELETE FROM preferences WHERE workspace_id = $1 AND id = $2`,
+    [scope.workspaceId, id]
+  );
+  return (rowCount ?? 0) > 0;
+}
+
 export async function remember(
   client: PoolClient,
   scope: AccessScope,

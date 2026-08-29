@@ -153,6 +153,13 @@ export interface NellOptions {
   /** What was done, and whether the record of it still verifies. */
   readonly audit?: (scope: AccessScope) => Promise<AuditView>;
   /**
+   * A one-time link to read and edit `MEMORY.md`.
+   *
+   * Not under `vault`, because it needs no encryption key — an install with no
+   * vault can still let someone correct what Nell believes about them.
+   */
+  readonly memoryLink?: (scope: AccessScope) => string;
+  /**
    * Runs one pipeline step durably, when an engine is configured.
    *
    * Threaded from `main` rather than resolved here, so nothing in this file
@@ -1150,6 +1157,16 @@ async function memoryCommand(
     history: "TASKS.md",
   };
 
+  if (which.toLowerCase() === "edit") {
+    if (!options.memoryLink) return "Editing is not available on this install.";
+    return [
+      `Open this on the computer I'm running on: ${options.memoryLink(scope)}`,
+      "",
+      "It shows exactly what I read before every task. Change a line to correct it,",
+      "delete one to forget it. Works once and expires in ten minutes.",
+    ].join("\n");
+  }
+
   const wanted = named[which.toLowerCase()];
   if (wanted) return `**${wanted}**\n\n${files[wanted] ?? "_empty_"}`;
 
@@ -1165,6 +1182,9 @@ async function memoryCommand(
     "",
     "/memory rules · /memory facts · /memory tasks for one at a time.",
     "/remember <anything> to add a note · /forget <number> to drop one.",
+    options.memoryLink
+      ? `/memory edit to correct any of it: open ${options.memoryLink(scope)}`
+      : "",
     "This is exactly what I read before every task — not a summary of it.",
   ].join("\n");
 }

@@ -22,6 +22,10 @@ import { run } from "./nell.js";
 import { vaultAccess } from "./vault-secrets.js";
 import { startVaultForm } from "./vault-form.js";
 import { forgetItem, listItems } from "./vault-store.js";
+import { applyMemoryEdits } from "./memory-edit.js";
+import { readDirectives, readLedger } from "./memory-store.js";
+import { readProfile } from "./profile.js";
+import { exportMemory } from "@nell/memory";
 import { runTicker } from "./ticker.js";
 import { sendMessage } from "./telegram-poll.js";
 import { WorkspaceSessions } from "./workspace-session.js";
@@ -170,21 +174,51 @@ const search = anthropicKey ? anthropicSearchProvider({ apiKey: anthropicKey }) 
  * Only started when there is a key to encrypt with — a form that collects
  * credentials and has nowhere to put them is worse than no form.
  */
-const form =
-  vaultKeys && vault
-    ? await startVaultForm({
+const form = await startVaultForm({
+  pool,
+  ...(vaultKeys ? { keys: vaultKeys } : {}),
+  /**
+   * Reading and editing what Nell believes about you.
+   *
+   * `parseMemoryMarkdown` has existed since v1 with no caller, so `MEMORY.md`
+   * could be read and never corrected — and a memory you cannot correct is one
+   * you have to trust rather than check. Served here rather than in the chat
+   * because a document is a poor thing to edit one message at a time.
+   */
+  memory: {
+    read: async (scope) =>
+      withWorkspace(
         pool,
-        keys: vaultKeys,
+        scope,
+        async (client) =>
+          exportMemory({
+            workspaceId: scope.workspaceId,
+            preferences: await readProfile(client, scope),
+            directives: await readDirectives(client, scope),
+            entries: await readLedger(client, scope, 50),
+            now: Date.now(),
+          }).files["MEMORY.md"] ?? ""
+      ),
+    save: (scope, markdown) => applyMemoryEdits(pool, scope, markdown),
+  },
+  ...(vaultKeys && vault
+    ? {
         // So the form opens with the email already in it and only the password
         // left to type — the part that must be typed there, and the only part.
         knownAccount: vault.knownAccount,
         // The item id and its kind, never the value — an audit log that records
         // secrets is a second copy of the vault with no encryption on it.
         onSaved: (scope, kind, itemId) =>
-          audit.record({ action: "secret.write", subject: itemId, detail: { kind }, at: stamp() }),
-      })
-    : undefined;
-if (form) console.log("vault: on");
+          audit.record({
+            action: "secret.write",
+            subject: itemId,
+            detail: { kind },
+            at: stamp(),
+          }),
+      }
+    : {}),
+});
+if (vaultKeys) console.log("vault: on");
 
 /**
  * Durable execution, when a system database is reachable.
@@ -319,6 +353,7 @@ await run(
     capabilities: new Set<Capability>(anthropicKey ? ["assist", "browse"] : ["browse"]),
     /** What was done, chained so an edit to the record is detectable. */
     audit: (scope) => readAudit(pool, scope),
+    memoryLink: form.memoryLink,
     ...(durableEngine
       ? { durably: <T>(name: string, fn: () => Promise<T>) => durableEngine.step(name, fn) }
       : {}),
@@ -332,7 +367,7 @@ await run(
 
 await ticking;
 await shutdownDurableTasks();
-await form?.close();
+await form.close();
 await sessions.close();
 await browser.shutdown();
 await pool.end();

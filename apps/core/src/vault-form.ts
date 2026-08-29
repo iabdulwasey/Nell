@@ -69,9 +69,30 @@ interface Pending {
  */
 export type KnownAccount = (scope: AccessScope) => Promise<string | undefined>;
 
+/**
+ * Editing a memory file, when the caller wants that route served too.
+ *
+ * `read` renders the document into the textarea; `save` is handed whatever came
+ * back. Kept as two functions rather than a dependency on the memory store so
+ * this file continues to know nothing about preferences, directives or how any
+ * of them are parsed.
+ */
+export interface MemoryPage {
+  readonly read: (scope: AccessScope) => Promise<string>;
+  readonly save: (scope: AccessScope, markdown: string) => Promise<string>;
+}
+
 export interface VaultFormOptions {
   readonly pool: Pool;
-  readonly keys: KeyProvider;
+  /**
+   * Optional, because the memory page needs no vault.
+   *
+   * Absent means the vault routes are refused rather than the whole server
+   * being unavailable — an install with no encryption key can still let someone
+   * read and correct what Nell believes about them.
+   */
+  readonly keys?: KeyProvider;
+  readonly memory?: MemoryPage;
   readonly port?: number;
   readonly now?: () => number;
   readonly knownAccount?: KnownAccount;
@@ -101,6 +122,8 @@ export interface VaultForm {
     username?: string,
     kind?: VaultItemKind
   ) => string;
+  /** A one-time link to read and edit `MEMORY.md`. */
+  readonly memoryLink: (scope: AccessScope) => string;
   readonly close: () => Promise<void>;
 }
 
@@ -124,7 +147,8 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
     // Parsed against a fixed base so a malformed URL cannot throw here, and so
     // the query is read the same way whatever the client sent.
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const token = /^\/v\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname)?.[1];
+    const route = /^\/([vm])\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname);
+    const token = route?.[2];
     const entry = token ? find(pending, token) : undefined;
     const form = formFor(url.searchParams.get("kind"));
 
@@ -139,6 +163,34 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
         404,
         "That link has expired or has already been used. Ask for a new one."
       );
+    }
+
+    /**
+     * The memory page: read the document, edit it, save it back.
+     *
+     * The round trip is what makes the file approach real rather than a report.
+     * `parseMemoryMarkdown` has existed since v1 with nothing calling it, so
+     * `MEMORY.md` could be read and never corrected — and a memory you cannot
+     * correct is one you have to trust rather than check.
+     */
+    if (route?.[1] === "m") {
+      if (!options.memory) return plain(response, 404, "Memory editing is not enabled.");
+
+      if (request.method === "GET") {
+        const body = await options.memory.read(entry.value.scope);
+        return memoryPage(response, entry.key, body, "");
+      }
+      if (request.method !== "POST") return plain(response, 405, "No.");
+
+      const body = await read(request);
+      if (body === undefined) return plain(response, 413, "Too much.");
+      const markdown = new URLSearchParams(body).get("markdown") ?? "";
+
+      // Burned before the write, like the vault form and for the same reason: a
+      // link released only on success is unlimited for anyone who can fail.
+      pending.delete(entry.key);
+      const note = await options.memory.save(entry.value.scope, markdown);
+      return plain(response, 200, note);
     }
 
     if (request.method === "GET") {
@@ -208,9 +260,13 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
     pending.delete(entry.key);
 
     let saved = "";
+    if (!options.keys) {
+      return plain(response, 400, "This install has no vault key, so nothing can be saved.");
+    }
+
     try {
       saved = await withWorkspace(options.pool, entry.value.scope, (client) =>
-        saveItem(client, entry.value.scope, options.keys, {
+        saveItem(client, entry.value.scope, options.keys!, {
           kind: form.kind,
           label: built.item.label,
           ...(built.item.accountHint ? { accountHint: built.item.accountHint } : {}),
@@ -251,6 +307,16 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
       });
       const at = `http://127.0.0.1:${String(addressOf(server, port))}/v/${token}`;
       return kind && kind !== "login" ? `${at}?kind=${kind}` : at;
+    },
+    memoryLink: (scope) => {
+      const token = randomBytes(32).toString("base64url");
+      pending.set(token, {
+        scope,
+        origin: "",
+        username: "",
+        expiresAt: now() + LINK_TTL_MS,
+      });
+      return `http://127.0.0.1:${String(addressOf(server, port))}/m/${token}`;
     },
     close: () =>
       new Promise<void>((resolve) => {
@@ -432,6 +498,30 @@ function page(
   );
 }
 
+/** The document, in a box, with a save button. */
+function memoryPage(response: ServerResponse, token: string, body: string, error: string): void {
+  response.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+  });
+
+  response.end(
+    shell(
+      `${error ? `<p class="error">${escape(error)}</p>` : ""}
+      <form method="post" action="/m/${escape(token)}">
+        <textarea name="markdown" rows="22" spellcheck="false">${escape(body)}</textarea>
+        <button type="submit">Save</button>
+      </form>
+      <p class="note">
+        This is what Nell reads before every task — not a summary of it. Edit a line
+        to correct it, delete one to forget it. Lines it cannot parse are left alone
+        rather than losing the rest of your edits.
+      </p>`
+    )
+  );
+}
+
 function shell(body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -452,6 +542,9 @@ function shell(body: string): string {
           background: transparent; color: inherit; }
   button { padding: .6rem 1.1rem; font: inherit; border-radius: .4rem; border: 0;
            background: currentColor; color: Canvas; cursor: pointer; }
+  textarea { width: 100%; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+             padding: .7rem; border-radius: .4rem; background: transparent; color: inherit;
+             border: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
   .note { font-size: .8rem; opacity: .62; margin-top: 1.5rem; }
   .error { color: #c0392b; font-size: .85rem; }
 </style></head><body>${body}</body></html>`;
