@@ -15,6 +15,7 @@
     "@nell/browser": "workspace:*",
     "@nell/integrations": "workspace:*",
     "@nell/payments": "workspace:*",
+    "@nell/recipes": "workspace:*",
     "@nell/shared": "workspace:*",
     "zod": "4.4.3"
   },

@@ -43,6 +43,8 @@ import {
 import { operationClassOfComputerAction, validateTarget } from "@nell/browser";
 import { authorizeCard, toleranceFor, type VirtualCard } from "@nell/payments";
 import { checkForDrift, qualify, registerTools } from "@nell/integrations";
+import { canAccess, type Membership } from "@nell/aegis";
+import { trust } from "@nell/recipes";
 
 export type AttackCategory =
   | "prompt-injection"
@@ -92,6 +94,12 @@ function handoff() {
     now: NOW,
   });
 }
+
+const household: readonly Membership[] = [
+  { householdId: "h1", userId: "ada", role: "owner", joinedAt: NOW },
+  { householdId: "h1", userId: "sam", role: "member", joinedAt: NOW },
+  { householdId: "h1", userId: "gone", role: "member", joinedAt: NOW, removedAt: NOW + 1 },
+];
 
 function standing() {
   const minted = mintStandingApproval({
@@ -738,6 +746,76 @@ export const ATTACKS: readonly Attack[] = [
         return true;
       }
     },
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Households                                                        */
+  /* ---------------------------------------------------------------- */
+  {
+    id: "household-reads-anothers-private-task",
+    name: "One household member reading another's private tasks",
+    category: "tenant-isolation",
+    guards:
+      '"Everyone in the household can see everything" is a sentence that ends relationships. An assistant should not be the thing that discovers a surprise party or a job interview.',
+    refuses: () =>
+      !canAccess({
+        thing: { id: "t1", ownerUserId: "sam", householdId: "h1", visibility: "private" },
+        viewerUserId: "ada",
+        memberships: household,
+      }).ok,
+  },
+  {
+    id: "household-owner-reads-member",
+    name: "A household owner reading an adult member's private things",
+    category: "tenant-isolation",
+    guards:
+      "Being the person who created a household is not a licence to read the people in it. Supervision is narrow, explicit, and disclosed to the person supervised.",
+    refuses: () =>
+      !canAccess({
+        thing: { id: "t2", ownerUserId: "sam", householdId: "h1", visibility: "private" },
+        viewerUserId: "ada",
+        memberships: household,
+      }).ok,
+  },
+  {
+    id: "household-removed-member-retains-access",
+    name: "Someone removed from a household still reading its shared things",
+    category: "tenant-isolation",
+    guards: "A household is a place people leave, and leaving has to actually take effect.",
+    refuses: () =>
+      !canAccess({
+        thing: { id: "t3", ownerUserId: "ada", householdId: "h1", visibility: "household" },
+        viewerUserId: "gone",
+        memberships: household,
+      }).ok,
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Community recipes                                                 */
+  /* ---------------------------------------------------------------- */
+  {
+    id: "recipe-unsigned",
+    name: "An unsigned recipe from the marketplace",
+    category: "code-execution",
+    guards:
+      "A stranger's recipe drives a browser holding the user's logins. Refusing costs only speed, because a recipe is an optimisation and never a capability.",
+    refuses: () =>
+      !trust(
+        { recipe: {}, signerId: "nobody", signature: "AAAA" },
+        { signers: [], revocations: [] }
+      ).ok,
+  },
+  {
+    id: "recipe-unknown-signer",
+    name: "A recipe signed by someone this install does not trust",
+    category: "code-execution",
+    guards:
+      "Signing buys provenance. A valid signature from an unknown party is not provenance, it is a stranger with a pen.",
+    refuses: () =>
+      !trust(
+        { recipe: {}, signerId: "someone-else", signature: "AAAA" },
+        { signers: [], revocations: [] }
+      ).ok,
   },
 
   /* ---------------------------------------------------------------- */

@@ -28,3 +28,20 @@ export {
 } from "./recipe.js";
 
 export { RECIPES } from "./pack.js";
+
+export {
+  bestTrusted,
+  canonicalForm,
+  describeFallback,
+  recipeDigest,
+  signedRecipeSchema,
+  signerSchema,
+  trust,
+  verifyRecipeSignature,
+  type Revocation,
+  type SignedRecipe,
+  type Signer,
+  type TrustDecision,
+  type TrustFailure,
+  type TrustOptions,
+} from "./marketplace.js";

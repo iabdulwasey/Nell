@@ -126,3 +126,17 @@ export {
   type SourceKind,
   type SourceRecord,
 } from "./recall.js";
+
+export {
+  greeting,
+  isQuestion,
+  memoryFor,
+  suggestFrom,
+  suggestionSourceSchema,
+  MAX_SUGGESTIONS,
+  MIN_OCCURRENCES,
+  type OnboardingSignal,
+  type Suggestion,
+  type SuggestionResponse,
+  type SuggestionSource,
+} from "./onboarding.js";

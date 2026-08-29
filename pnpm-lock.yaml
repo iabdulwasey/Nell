@@ -384,6 +384,9 @@ importers:
       '@nell/payments':
         specifier: workspace:*
         version: link:../payments
+      '@nell/recipes':
+        specifier: workspace:*
+        version: link:../recipes
       '@nell/shared':
         specifier: workspace:*
         version: link:../shared

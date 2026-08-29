@@ -127,3 +127,25 @@ export {
   type StandingDecision,
   type StandingDenial,
 } from "./standing-approval.js";
+
+export {
+  canAccess,
+  explainAccessRefusal,
+  householdRoleSchema,
+  removeMember,
+  share,
+  supervisionNotice,
+  unshare,
+  visibilitySchema,
+  visibleTo,
+  DEFAULT_VISIBILITY,
+  type AccessDecision,
+  type AccessQuestion,
+  type AccessRefusal,
+  type HouseholdRole,
+  type Membership,
+  type OwnedThing,
+  type ShareDecision,
+  type ShareRefusal,
+  type Visibility,
+} from "./household.js";
