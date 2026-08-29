@@ -186,6 +186,7 @@ export function greeting(): string {
      * to discover that.
      */
     "A few things I can be told directly:",
+    "- /memory — everything I know about you, and everything I've done",
     "- /vault — logins I can sign in with, and how to add one",
     "- /schedules — anything I'm doing on a repeat, and /stop to cancel",
     "- /models — what this install can do, and which key would add the rest",

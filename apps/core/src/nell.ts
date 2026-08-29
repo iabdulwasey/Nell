@@ -35,7 +35,7 @@ import {
 } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
 import type { SearchProvider } from "@nell/integrations";
-import { greeting } from "@nell/memory";
+import { exportMemory, greeting, renderBrain } from "@nell/memory";
 import type { VaultItemKind } from "@nell/vault";
 import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
@@ -56,6 +56,7 @@ import {
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
+import { readDirectives, readLedger, recordOutcome } from "./memory-store.js";
 import { recentTurns, rememberTurn, renderConversation } from "./conversation.js";
 import type { AuditView } from "./audit-store.js";
 import { FORMS } from "./vault-kinds.js";
@@ -256,6 +257,9 @@ export async function handleMessage(
           )
         )
       );
+    } else if (command === "/memory") {
+      await ensureWorkspace(options, scope);
+      await reply(await memoryCommand(options, scope, objective));
     } else if (command === "/audit") {
       await ensureWorkspace(options, scope);
       await reply(await auditCommand(options, scope));
@@ -526,6 +530,33 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
   );
 
   /**
+   * What Nell has actually done before — the other half of the brain document.
+   *
+   * `task_ledger` has existed since the first migration with nothing writing to
+   * it, so "Recent tasks" rendered empty and the whole document looked like a
+   * thin wrapper round the preference list. It is not: precedent is what makes
+   * "the same as last time" answerable.
+   */
+  const history = await withWorkspace(options.pool, run.scope, (client) =>
+    readLedger(client, run.scope, 10)
+  ).catch(() => []);
+
+  /**
+   * The document, not the row list.
+   *
+   * Rendered once and used for both the dispatcher and the worker, so what the
+   * two see cannot drift — and it is the same markdown a person gets from
+   * `/memory`, which is the property worth having: what you read is what the
+   * model sees.
+   */
+  const brain = renderBrain({
+    workspaceId: run.scope.workspaceId,
+    preferences: profile,
+    entries: history,
+    now: Date.now(),
+  }).markdown;
+
+  /**
    * What was said before — read *before* the turn is written down.
    *
    * Ordering matters and is easy to get backwards: recording first would put the
@@ -573,9 +604,7 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
        * out. Everything downstream takes an objective and needs no change.
        */
       ...(conversation.length > 0 ? { conversation: renderConversation(conversation) } : {}),
-      ...(profileForPrompt(profile, run.scope)
-        ? { profile: profileForPrompt(profile, run.scope) }
-        : {}),
+      ...(brain ? { profile: brain } : {}),
     });
 
     const missing = unsupported(plan.steps, options.capabilities);
@@ -625,7 +654,7 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
          */
         objective: plan.objective,
         files,
-        profile: profileForPrompt(profile, run.scope),
+        profile: brain,
         ...(run.live?.steering ? { steering: run.live.steering } : {}),
         ...(run.live?.signal ? { signal: run.live.signal } : {}),
       },
@@ -690,6 +719,22 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
       outcome.ok ? "done" : "failed",
     ]);
   });
+
+  /**
+   * And into the ledger, which is what precedent is read from later.
+   *
+   * Failures are recorded too. "I tried to book that and the site wanted a
+   * login" is exactly the precedent that stops the same attempt being made the
+   * same way next week, and a history of only successes is a history that
+   * teaches nothing.
+   */
+  await withWorkspace(options.pool, run.scope, (client) =>
+    recordOutcome(client, run.scope, {
+      taskId: run.taskId,
+      objective: run.objective,
+      outcome: outcome.ok ? "succeeded" : outcome.needsApproval ? "blocked-on-user" : "failed",
+    })
+  ).catch(() => undefined);
 
   // The answer if there is one, and what was done if the task had no answer to
   // give. Never both: prefixing the result with "Done — I searched three sites"
@@ -807,6 +852,72 @@ async function ensureWorkspace(options: NellOptions, scope: AccessScope): Promis
       scope.workspaceId,
     ]);
   }).catch(() => undefined);
+}
+
+/**
+ * `/memory` — the three files, and the point of keeping memory this way.
+ *
+ * Memory is *stored* as rows, because that is what gives transactions, tenant
+ * isolation and honest deletion. It is *shown* as `USER.md`, `MEMORY.md` and
+ * `TASKS.md`, because rows are a poor thing to hand a model and a worse thing
+ * to show a person — and because the file layout is one people already know.
+ *
+ * The property worth having is that these are not a report *about* what the
+ * model sees. `MEMORY.md` is rendered from the same call that builds the
+ * document going into the prompt, so what you read here is what it reads there.
+ * A summary that could drift from the thing it summarises is how an agent ends
+ * up confidently wrong about you with no way for you to notice.
+ */
+async function memoryCommand(
+  options: NellOptions,
+  scope: AccessScope,
+  objective: string
+): Promise<string> {
+  const [, which = ""] = objective.split(/\s+/u);
+
+  const { preferences, directives, entries } = await withWorkspace(
+    options.pool,
+    scope,
+    async (client) => ({
+      preferences: await readProfile(client, scope),
+      directives: await readDirectives(client, scope),
+      entries: await readLedger(client, scope, 50),
+    })
+  );
+
+  const files = exportMemory({
+    workspaceId: scope.workspaceId,
+    preferences,
+    directives,
+    entries,
+    now: Date.now(),
+  }).files;
+
+  const named: Readonly<Record<string, string>> = {
+    user: "USER.md",
+    rules: "USER.md",
+    memory: "MEMORY.md",
+    facts: "MEMORY.md",
+    tasks: "TASKS.md",
+    history: "TASKS.md",
+  };
+
+  const wanted = named[which.toLowerCase()];
+  if (wanted) return `**${wanted}**\n\n${files[wanted] ?? "_empty_"}`;
+
+  /**
+   * Everything, when nothing is named — but the whole point is being able to
+   * read it, so a long history is trimmed here rather than silently cut off by
+   * the channel splitting it into eight messages.
+   */
+  return [
+    Object.entries(files)
+      .map(([name, body]) => `**${name}**\n\n${body.trim()}`)
+      .join("\n\n---\n\n"),
+    "",
+    "/memory rules · /memory facts · /memory tasks for one at a time.",
+    "This is exactly what I read before every task — not a summary of it.",
+  ].join("\n");
 }
 
 /**
