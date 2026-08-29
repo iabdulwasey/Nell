@@ -58,6 +58,22 @@ export interface ActionResult {
 export interface BrowserProvider {
   createSession(scope: AccessScope, options?: CreateSessionOptions): Promise<BrowserSession>;
 
+  /**
+   * Start a fresh page in the same session, keeping cookies and logins.
+   *
+   * The distinction a persistent browser forces you to make. Holding the session
+   * open between tasks is what stops the agent logging in again every time — but
+   * it also means a new task's first look is the *previous* task's last page.
+   * Watched live: one task ended on a site showing a wall, the next task was
+   * asked about a different site entirely, and it answered about the first,
+   * having never navigated anywhere.
+   *
+   * Cookies live on the context and survive; the page does not. Optional so an
+   * adapter that cannot do this is simply one where a task inherits the last
+   * page, which is the behaviour that existed before.
+   */
+  reset?(scope: AccessScope, sessionId: string): Promise<void>;
+
   /** Execute a bounded batch of typed actions. Never accepts code. */
   perform(
     scope: AccessScope,

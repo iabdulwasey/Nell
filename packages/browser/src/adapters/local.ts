@@ -40,7 +40,8 @@ import type {
 interface LiveSession {
   readonly session: BrowserSession;
   readonly context: BrowserContext;
-  readonly page: Page;
+  /** Replaced by `reset` between tasks; the context, and so the cookies, is not. */
+  page: Page;
   /** Bumped on every snapshot; refs from earlier versions are stale. */
   snapshotVersion: number;
   /**
@@ -186,6 +187,23 @@ export class LocalBrowserProvider implements BrowserProvider {
       snapshotVersion: 0,
     });
     return session;
+  }
+
+  /**
+   * A new page in the same context.
+   *
+   * The context is where cookies, storage and logins live, so replacing only
+   * the page keeps every one of them while giving the next task a clean start.
+   * The snapshot version is deliberately *not* reset: refs must never repeat
+   * across a session, or a ref held from before this call could resolve against
+   * an element it never named.
+   */
+  async reset(scope: AccessScope, sessionId: string): Promise<void> {
+    const live = this.#require(scope, sessionId);
+    const page = await live.context.newPage();
+    await live.page.close().catch(() => undefined);
+    live.page = page;
+    live.cursor = { x: 0, y: 0 };
   }
 
   async perform(

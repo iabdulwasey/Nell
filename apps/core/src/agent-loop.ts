@@ -45,6 +45,12 @@ export interface LoopRequest {
   readonly sessionId: string;
   readonly objective: string;
   readonly maxSteps?: number;
+  /**
+   * What Nell knows about this user, already rendered. Empty when it knows
+   * nothing, which is the state every task was in before tier-1 memory had a
+   * database under it.
+   */
+  readonly profile?: string;
   /** Called after each step, so a user can watch rather than wait in silence. */
   readonly onStep?: (note: string) => void;
 }
@@ -157,6 +163,7 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
       snapshot,
       history,
       findings,
+      ...(request.profile ? { profile: request.profile } : {}),
     });
 
     if (!planned.ok) {

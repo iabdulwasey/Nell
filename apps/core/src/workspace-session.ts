@@ -19,6 +19,12 @@
  * gets the compounding benefit today without pretending the two surfaces have
  * been unified — they have not, and doing that properly is its own change.
  *
+ * What carries between tasks is the *context* — cookies, storage, logins — and
+ * not the page. Each task gets a fresh one. That distinction was learned the
+ * hard way: a task ended on a site showing a wall, the next message asked about
+ * somewhere else, and the answer came back about the first site, because the
+ * first thing the new task saw was the old task's page.
+ *
  * Serial by assumption, not by lock: `run()` handles one message at a time, and
  * a workspace has one machine, so two tasks sharing it is a scheduling question
  * the task registry answers rather than something to paper over with a mutex.
@@ -29,10 +35,7 @@ import type { AccessScope } from "@nell/shared";
 
 export interface SessionPoolOptions {
   readonly provider: BrowserProvider;
-  /**
-   * Where a workspace's browser opens the very first time, and never again —
-   * after that it is wherever the last task left it.
-   */
+  /** Where a workspace's browser opens the very first time, and never again. */
   readonly startUrl?: string;
 }
 
@@ -70,7 +73,20 @@ export class WorkspaceSessions {
   async acquire(scope: AccessScope): Promise<BrowserSession> {
     const existing = this.#sessions.get(scope.workspaceId);
     if (existing) {
-      if (await this.#alive(scope, existing.session)) return existing.session;
+      if (await this.#alive(scope, existing.session)) {
+        /**
+         * Cookies carry over; the page does not.
+         *
+         * Keeping the session open is what stops the agent logging in again for
+         * every task — but the first thing a new task sees would otherwise be
+         * the *last* task's page. Watched live: a task ended on a site showing a
+         * wall, the next message asked about somewhere else entirely, and the
+         * answer came back about the first site. The agent had never navigated;
+         * it was judged on a page left behind.
+         */
+        await this.#provider.reset?.(scope, existing.session.id);
+        return existing.session;
+      }
       this.#sessions.delete(scope.workspaceId);
     }
 

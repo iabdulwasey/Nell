@@ -18,7 +18,7 @@
  */
 
 import { BrowserExecutor } from "@nell/aegis";
-import { isBareReply, providerFor, type ProviderKeys } from "@nell/agent";
+import { isBareReply, providerFor, type ModelProvider, type ProviderKeys } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
 import type { SearchProvider } from "@nell/integrations";
 import { greeting } from "@nell/memory";
@@ -26,6 +26,16 @@ import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
 import { runLoop, type LoopOutcome } from "./agent-loop.js";
 import { withWorkspace } from "./db.js";
+import { reverseGeocode, resolvePlace } from "./geocode.js";
+import { park, peek, unpark } from "./pending-task.js";
+import {
+  LOCATION_KEY,
+  locationOf,
+  needsLocation,
+  profileForPrompt,
+  readProfile,
+  remember,
+} from "./profile.js";
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
 import { pollOnce, replyToStranger, sendMessage, type InboundMessage } from "./telegram-poll.js";
@@ -148,6 +158,61 @@ export async function handleMessage(
   await ensureWorkspace(options, scope);
 
   /**
+   * A shared pin is an answer, whatever was asked.
+   *
+   * Unambiguous in a way typed text never is, and one tap on the phone the user
+   * is already holding — so it is taken before anything else looks at the
+   * message. The coordinates become a place name because "17.38, 78.48" is not
+   * something a cinema listing will match.
+   */
+  if (message.sharedLocation) {
+    const place =
+      (await reverseGeocode(message.sharedLocation.latitude, message.sharedLocation.longitude)) ??
+      message.sharedLocation.label;
+
+    if (!place) {
+      await reply("I couldn't work out where that is. What's the city?");
+      return undefined;
+    }
+
+    await withWorkspace(options.pool, scope, (client) =>
+      remember(client, scope, {
+        key: LOCATION_KEY,
+        value: place,
+        category: "travel",
+        provenance: "user",
+      })
+    );
+    await reply(`${place} — noted. I'll use that when you say "near me".`);
+    return resumeParked(options, message, scope, resolved.provider);
+  }
+
+  /**
+   * A task is waiting on a location, and this might be it.
+   *
+   * The message is only believed if it resolves to a real place. Someone who
+   * ignores the question and asks for something else must not have "find me
+   * pizza" recorded as where they live — a wrong fact here quietly spoils every
+   * later task, and unlike a wrong action nobody sees it happen.
+   */
+  const parked = await withWorkspace(options.pool, scope, (client) => peek(client, scope));
+  if (parked) {
+    const place = await resolvePlace(objective);
+    if (place) {
+      await withWorkspace(options.pool, scope, (client) =>
+        remember(client, scope, {
+          key: LOCATION_KEY,
+          value: place,
+          category: "travel",
+          provenance: "user",
+        })
+      );
+      await reply(`${place} — noted. Carrying on.`);
+      return resumeParked(options, message, scope, resolved.provider);
+    }
+  }
+
+  /**
    * "Every morning at 6, scan the AI news" is a standing instruction, not a task
    * to do once — and doing it once and forgetting is the failure the user
    * actually reported, twice.
@@ -175,34 +240,99 @@ export async function handleMessage(
     return undefined;
   }
 
-  await withWorkspace(options.pool, scope, async (client) => {
+  /**
+   * "Near me" needs somewhere to be near.
+   *
+   * Asked rather than guessed, and asked *before* the browser opens: watched
+   * live, the agent searched the literal phrase "near me", because a datacentre
+   * browser has no useful idea where its user is. Instinct does not solve this
+   * with geolocation either — it asked once at onboarding and never forgot.
+   */
+  if (needsLocation(objective)) {
+    const known = await withWorkspace(options.pool, scope, (client) => locationOf(client, scope));
+    if (!known) {
+      await withWorkspace(options.pool, scope, (client) =>
+        park(client, scope, {
+          id: taskId,
+          objective,
+          threadRef: message.envelope.threadRef,
+        })
+      );
+      await reply("Where are you? A city is enough — or send your location and I'll remember it.");
+      return undefined;
+    }
+  }
+
+  return executeTask(options, {
+    scope,
+    taskId,
+    objective,
+    threadRef: message.envelope.threadRef,
+    model: resolved.provider,
+  });
+}
+
+interface TaskRun {
+  readonly scope: AccessScope;
+  readonly taskId: string;
+  readonly objective: string;
+  readonly threadRef: string;
+  readonly model: ModelProvider;
+}
+
+/**
+ * Run one objective and report it.
+ *
+ * Separated from message handling because a task can start two ways — someone
+ * asks for it, or someone answers the question that was blocking it — and both
+ * must behave identically from here on. A resumed task that skipped the "On it"
+ * or wrote a different row would be a second, subtly different code path for
+ * the thing that matters most.
+ */
+async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutcome> {
+  const log = options.log ?? (() => undefined);
+  const reply = (text: string) =>
+    sendMessage({ token: options.telegramToken, chatId: run.threadRef, text });
+
+  await withWorkspace(options.pool, run.scope, async (client) => {
     await client.query(
       `INSERT INTO tasks (id, workspace_id, label, status, channel_thread_ref, updated_at)
        VALUES ($1, $2, $3, 'running', $4, now())
        ON CONFLICT (id) DO UPDATE SET status = 'running', updated_at = now()`,
-      [taskId, scope.workspaceId, objective.slice(0, 120), message.envelope.threadRef]
+      [run.taskId, run.scope.workspaceId, run.objective.slice(0, 120), run.threadRef]
     );
   });
 
   await reply("On it.");
 
+  /**
+   * What Nell knows about this person, sent with every plan.
+   *
+   * The reason the profile exists: "near me" is unanswerable without it, and so
+   * is any preference the user stated once and reasonably expects to hold.
+   */
+  const profile = await withWorkspace(options.pool, run.scope, (client) =>
+    readProfile(client, run.scope)
+  );
+
   let outcome: LoopOutcome;
 
   try {
-    const session = await options.sessions.acquire(scope);
+    const session = await options.sessions.acquire(run.scope);
 
     outcome = await runLoop(
       {
         provider: options.browser,
         executor: new BrowserExecutor({ driver: options.browser }),
-        model: resolved.provider,
+        model: run.model,
         modelId: options.modelId,
         ...(options.search ? { search: options.search } : {}),
       },
       {
-        scope,
+        scope: run.scope,
         sessionId: session.id,
-        objective,
+        objective: run.objective,
+        profile: profileForPrompt(profile, run.scope),
         // Sent as they happen, so a slow task is visibly working rather than
         // silently hung. Silence is what makes people ask again.
         onStep: (note) => {
@@ -223,18 +353,41 @@ export async function handleMessage(
   // It is closed on shutdown, or when the user asks for it to be destroyed —
   // which is a deletion with a receipt, not cleanup.
 
-  await withWorkspace(options.pool, scope, async (client) => {
+  await withWorkspace(options.pool, run.scope, async (client) => {
     await client.query(`UPDATE tasks SET status = $2, updated_at = now() WHERE id = $1`, [
-      taskId,
+      run.taskId,
       outcome.ok ? "done" : "failed",
     ]);
   });
 
-  // The answer if there is one, and what was done if the task had no answer to
-  // give. Never both: prefixing the result with "Done — I searched three sites"
-  // buries it, and the result is the only part anyone asked for.
   await reply(outcome.ok ? outcome.answer || `Done — ${outcome.summary}` : outcome.reason);
   return outcome;
+}
+
+/**
+ * Pick up whatever was waiting on the answer that just arrived.
+ *
+ * Returns undefined when nothing was parked, which is the ordinary case for a
+ * user volunteering their location before being asked.
+ */
+async function resumeParked(
+  options: NellOptions,
+  message: InboundMessage,
+  scope: AccessScope,
+  model: ModelProvider
+): Promise<LoopOutcome | undefined> {
+  const parked = await withWorkspace(options.pool, scope, (client) => peek(client, scope));
+  if (!parked) return undefined;
+
+  await withWorkspace(options.pool, scope, (client) => unpark(client, scope, parked.id));
+
+  return executeTask(options, {
+    scope,
+    taskId: parked.id,
+    objective: parked.objective,
+    threadRef: parked.threadRef ?? message.envelope.threadRef,
+    model,
+  });
 }
 
 async function ensureWorkspace(options: NellOptions, scope: AccessScope): Promise<void> {

@@ -31,6 +31,20 @@ const updateSchema = z.object({
       message_id: z.number(),
       date: z.number(),
       text: z.string().optional(),
+      /**
+       * A shared pin, or a named place from Telegram's "send location".
+       *
+       * Worth taking as a distinct thing rather than hoping the user types
+       * their city: a pin is unambiguous, needs no parsing, and is one tap on
+       * the phone they are already holding.
+       */
+      location: z.object({ latitude: z.number(), longitude: z.number() }).optional(),
+      venue: z
+        .object({
+          title: z.string().optional(),
+          address: z.string().optional(),
+        })
+        .optional(),
       chat: z.object({ id: z.union([z.number(), z.string()]) }),
       from: z.object({ id: z.union([z.number(), z.string()]) }).optional(),
     })
@@ -49,6 +63,15 @@ export interface InboundMessage {
   /** Present only when the sender was recognised. */
   readonly userId?: string;
   readonly idempotencyKey: string;
+  /** Present when the user shared a place rather than typing one. */
+  readonly sharedLocation?: SharedLocation;
+}
+
+export interface SharedLocation {
+  readonly latitude: number;
+  readonly longitude: number;
+  /** Telegram's own name for the place, when it sent one. */
+  readonly label?: string;
 }
 
 export interface PollOptions {
@@ -93,7 +116,9 @@ export async function pollOnce(
     nextOffset = Math.max(nextOffset, update.update_id + 1);
 
     const message = update.message;
-    if (!message?.text) continue;
+    // A shared pin arrives with no text at all, so requiring text would drop the
+    // single most useful message the user can send.
+    if (!message || (!message.text && !message.location)) continue;
 
     const senderRef = String(message.from?.id ?? message.chat.id);
     const userId = options.knownSenders.get(senderRef);
@@ -105,12 +130,23 @@ export async function pollOnce(
       providerMessageId: `${String(message.chat.id)}:${String(message.message_id)}`,
       threadRef: String(message.chat.id),
       senderRef,
-      text: message.text,
+      text: message.text ?? placeholderFor(message.venue),
       receivedAt: message.date * 1000,
     };
 
+    const shared: SharedLocation | undefined = message.location
+      ? {
+          latitude: message.location.latitude,
+          longitude: message.location.longitude,
+          ...(message.venue?.title || message.venue?.address
+            ? { label: [message.venue.title, message.venue.address].filter(Boolean).join(", ") }
+            : {}),
+        }
+      : undefined;
+
     messages.push({
       envelope,
+      ...(shared ? { sharedLocation: shared } : {}),
       // The load-bearing line in this file.
       provenance: userId ? "user" : "untrusted",
       userId,
@@ -128,6 +164,17 @@ export async function pollOnce(
  * online reads as broken and invites retrying. It says what it is and stops
  * there — no capability list, nothing that reads as an invitation to keep going.
  */
+/**
+ * What a location-only message says it is.
+ *
+ * The envelope's `text` is what everything downstream reads, and a shared pin
+ * has none — leaving it empty would make the message look like nothing arrived.
+ */
+function placeholderFor(venue: { title?: string; address?: string } | undefined): string {
+  const named = [venue?.title, venue?.address].filter(Boolean).join(", ");
+  return named ? `Shared location: ${named}` : "Shared location";
+}
+
 export function replyToStranger(): string {
   return (
     "This assistant only works for the person who set it up, so I can't help with that. " +

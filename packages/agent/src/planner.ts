@@ -189,6 +189,12 @@ export interface PlanRequest {
    * filing them together is the confusion the provenance model exists to stop.
    */
   readonly findings?: readonly string[];
+  /**
+   * Standing facts about the user — where they live, what they avoid, how they
+   * like things done. Trusted, unlike everything else in the prompt: a
+   * preference can only be written from something the user themselves said.
+   */
+  readonly profile?: string;
   readonly timeoutMs?: number;
 }
 
@@ -294,7 +300,19 @@ function renderContext(request: PlanRequest): string {
   const found =
     request.findings && request.findings.length > 0 ? ["", ...request.findings.slice(-3)] : [];
 
+  /**
+   * Before the objective, because it changes what the objective *means*.
+   *
+   * "Find a cinema near me" is not a well-formed request until you know where
+   * the user is; putting the profile after it would have the model read the
+   * task, form a plan, and then discover the missing half.
+   */
+  const about = request.profile?.trim()
+    ? ["About the user — their own words, and reliable:", request.profile.trim(), ""]
+    : [];
+
   return [
+    ...about,
     `Objective: ${request.objective}`,
     ...history,
     ...found,
