@@ -12,6 +12,7 @@
  * owner would pass while proving the opposite of what it claims.
  */
 
+import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -19,6 +20,10 @@ const url = process.env["DATABASE_URL"];
 const describeDb = url ? describe : describe.skip;
 
 let client: pg.Client;
+
+/** Unique per run, so two runs of this suite never share a workspace. */
+const ALPHA = `ws-alpha-${randomUUID()}`;
+const BETA = `ws-beta-${randomUUID()}`;
 
 async function asWorkspace<T>(workspaceId: string, work: () => Promise<T>): Promise<T> {
   await client.query("SELECT set_config('app.workspace_id', $1, true)", [workspaceId]);
@@ -31,26 +36,27 @@ beforeAll(async () => {
   await client.connect();
 
   /**
-   * Start from empty rather than hoping the last run tidied up. A test that
-   * needs a clean database and does not make one is a test that passes until
-   * the first time something else fails.
+   * Its own workspaces rather than a clean database.
    *
-   * TRUNCATE, not DELETE, because audit_log refuses DELETE — deliberately. The
-   * line drawn is between an *application* rewriting history, which is the
-   * attack, and an *operator* wiping a database they own, which is a different
-   * act requiring different rights. Blocking both would make the table
-   * impossible to test against and would not stop anyone who could drop the
-   * trigger anyway.
+   * This used to `TRUNCATE audit_log, tasks, workspace_members, workspaces
+   * CASCADE`, which is a reasonable-looking way to start from a known state and
+   * a bad one to do on a database other suites are using. `CASCADE` locks every
+   * table referencing `workspaces` and removes their rows, so a test file
+   * running alongside fails on an assertion about data that vanished — which
+   * reads as flakiness rather than as interference, and cost real time to
+   * diagnose.
+   *
+   * Unique ids need no cleanup and cannot collide. `audit_log` is append-only
+   * by trigger, so leaving rows behind is the only option anyway.
    */
-  await client.query("TRUNCATE audit_log, tasks, workspace_members, workspaces CASCADE");
-  await client.query(
-    "INSERT INTO workspaces (id) VALUES ('ws-alpha'), ('ws-beta') ON CONFLICT DO NOTHING"
-  );
+  await client.query("INSERT INTO workspaces (id) VALUES ($1), ($2) ON CONFLICT DO NOTHING", [
+    ALPHA,
+    BETA,
+  ]);
 }, 30_000);
 
 afterAll(async () => {
   if (!url) return;
-  await client.query("TRUNCATE audit_log, tasks, workspace_members, workspaces CASCADE");
   await client.end();
 });
 
@@ -66,9 +72,10 @@ describeDb("row-level security holds in the database", () => {
 
   it("lets a workspace read its own rows", async () => {
     await client.query("BEGIN");
-    const found = await asWorkspace("ws-alpha", async () => {
+    const found = await asWorkspace(ALPHA, async () => {
       await client.query(
-        "INSERT INTO tasks (id, workspace_id, label) VALUES ('t-alpha', 'ws-alpha', 'Book dinner')"
+        "INSERT INTO tasks (id, workspace_id, label) VALUES ('t-alpha', $1, 'Book dinner')",
+        [ALPHA]
       );
       return client.query("SELECT id FROM tasks WHERE id = 't-alpha'");
     });
@@ -84,7 +91,7 @@ describeDb("row-level security holds in the database", () => {
    */
   it("returns nothing to a different workspace, with no filter in the query", async () => {
     await client.query("BEGIN");
-    const seen = await asWorkspace("ws-beta", () => client.query("SELECT id FROM tasks"));
+    const seen = await asWorkspace(BETA, () => client.query("SELECT id FROM tasks"));
     await client.query("COMMIT");
 
     expect(seen.rows).toHaveLength(0);
@@ -92,9 +99,10 @@ describeDb("row-level security holds in the database", () => {
 
   it("refuses to write a row into someone else's workspace", async () => {
     await client.query("BEGIN");
-    const attempt = asWorkspace("ws-beta", () =>
+    const attempt = asWorkspace(BETA, () =>
       client.query(
-        "INSERT INTO tasks (id, workspace_id, label) VALUES ('t-forged', 'ws-alpha', 'Not mine')"
+        "INSERT INTO tasks (id, workspace_id, label) VALUES ('t-forged', $1, 'Not mine')",
+        [ALPHA]
       )
     );
 
@@ -127,23 +135,24 @@ describeDb("row-level security holds in the database", () => {
    */
   it("keeps the audit log append-only, even for its own workspace", async () => {
     await client.query("BEGIN");
-    await asWorkspace("ws-alpha", () =>
+    await asWorkspace(ALPHA, () =>
       client.query(
         `INSERT INTO audit_log (sequence, workspace_id, action, subject, at, previous_digest, digest)
-         VALUES (1, 'ws-alpha', 'vault.fill', 'item-1', now(), '', 'abc')`
+         VALUES (1, $1, 'vault.fill', 'item-1', now(), '', 'abc')`,
+        [ALPHA]
       )
     );
     await client.query("COMMIT");
 
     await client.query("BEGIN");
-    const tamper = asWorkspace("ws-alpha", () =>
+    const tamper = asWorkspace(ALPHA, () =>
       client.query("UPDATE audit_log SET subject = 'something-else' WHERE sequence = 1")
     );
     await expect(tamper).rejects.toThrow();
     await client.query("ROLLBACK");
 
     await client.query("BEGIN");
-    const erase = asWorkspace("ws-alpha", () =>
+    const erase = asWorkspace(ALPHA, () =>
       client.query("DELETE FROM audit_log WHERE sequence = 1")
     );
     await expect(erase).rejects.toThrow();

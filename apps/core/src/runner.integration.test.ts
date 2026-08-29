@@ -18,6 +18,7 @@ import { BrowserExecutor } from "@nell/aegis";
 import { chromiumAvailable, LocalBrowserProvider } from "@nell/browser/adapters";
 import { accessScopeForUser } from "@nell/shared";
 import { Pool } from "pg";
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { assertRlsEnforceable, createPool } from "./db.js";
 import { listTasks, runTask, type RunnerDeps } from "./runner.js";
@@ -37,8 +38,32 @@ let origin: string;
 let pool: Pool;
 let deps: RunnerDeps;
 
-const scope = accessScopeForUser("user-slice");
-const other = accessScopeForUser("user-elsewhere");
+/**
+ * A workspace nobody else will use, rather than a shared name plus a TRUNCATE.
+ *
+ * This file used to `TRUNCATE tasks, workspace_members, workspaces CASCADE`
+ * between runs, which is two problems wearing one statement. `CASCADE` takes an
+ * ACCESS EXCLUSIVE lock on every table referencing `workspaces` — by now that is
+ * most of the schema — so any test file running in parallel deadlocks against
+ * it. And it *deletes their rows*, which is worse: the victim does not fail with
+ * a lock error, it fails with an assertion about data that was there a moment
+ * ago. That is what the intermittent failures elsewhere in this suite were.
+ *
+ * Unique ids per run need no cleanup and cannot collide, so nothing has to be
+ * taken away from anyone.
+ */
+/**
+ * Ids unique to this run — workspaces *and* tasks.
+ *
+ * The task ids matter for the same reason the workspace ids do. With no
+ * TRUNCATE, a fixed `task-1` collides with the row a previous run left behind,
+ * and the `ON CONFLICT (id) DO UPDATE` in `createTask` then tries to update a
+ * row belonging to a different workspace — which row-level security correctly
+ * refuses. The isolation was working; the test was relying on a wipe.
+ */
+const runId = randomUUID();
+const scope = accessScopeForUser(`user-slice-${runId}`);
+const other = accessScopeForUser(`user-elsewhere-${runId}`);
 
 beforeAll(async () => {
   if (!url || !chromiumReady) return;
@@ -56,7 +81,6 @@ beforeAll(async () => {
   // If this passes as a superuser the whole suite is theatre.
   await assertRlsEnforceable(pool);
 
-  await pool.query("TRUNCATE tasks, workspace_members, workspaces CASCADE");
   await pool.query("INSERT INTO workspaces (id) VALUES ($1), ($2)", [
     scope.workspaceId,
     other.workspaceId,
@@ -73,7 +97,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!url || !chromiumReady) return;
-  await pool.query("TRUNCATE tasks, workspace_members, workspaces CASCADE");
+  await pool.query("DELETE FROM tasks WHERE workspace_id = ANY($1)", [
+    [scope.workspaceId, other.workspaceId],
+  ]);
   await pool.end();
   await new Promise<void>((resolve) => {
     server.close(() => {
@@ -86,7 +112,7 @@ describeSlice("a task, from request to persisted outcome", () => {
   it("runs, reads the page, and records that it finished", async () => {
     const result = await runTask(deps, {
       scope,
-      id: "task-1",
+      id: `task-1-${runId}`,
       label: "Track order A-1234",
       startUrl: origin,
       provenance: "user",
@@ -97,7 +123,11 @@ describeSlice("a task, from request to persisted outcome", () => {
     if (result.ok) expect(result.extracted?.["text"]).toContain("Delivery status: shipped");
 
     const tasks = await listTasks(pool, scope);
-    expect(tasks).toContainEqual({ id: "task-1", label: "Track order A-1234", status: "done" });
+    expect(tasks).toContainEqual({
+      id: `task-1-${runId}`,
+      label: "Track order A-1234",
+      status: "done",
+    });
   }, 120_000);
 
   /**
@@ -107,7 +137,7 @@ describeSlice("a task, from request to persisted outcome", () => {
   it("refuses a task whose only basis is untrusted content, before opening a browser", async () => {
     const result = await runTask(deps, {
       scope,
-      id: "task-injected",
+      id: `task-injected-${runId}`,
       label: "Do what the email said",
       startUrl: origin,
       provenance: "untrusted",
@@ -118,7 +148,7 @@ describeSlice("a task, from request to persisted outcome", () => {
 
     // No row at all: the refusal happened before anything was written.
     const tasks = await listTasks(pool, scope);
-    expect(tasks.map((task) => task.id)).not.toContain("task-injected");
+    expect(tasks.map((task) => task.id)).not.toContain(`task-injected-${runId}`);
   }, 60_000);
 
   /**
@@ -128,7 +158,7 @@ describeSlice("a task, from request to persisted outcome", () => {
   it("marks a task failed rather than leaving it running", async () => {
     const result = await runTask(deps, {
       scope,
-      id: "task-broken",
+      id: `task-broken-${runId}`,
       label: "Visit somewhere unreachable",
       startUrl: "http://127.0.0.1:1/nowhere",
       provenance: "user",
@@ -138,7 +168,7 @@ describeSlice("a task, from request to persisted outcome", () => {
     expect(result.ok).toBe(false);
 
     const tasks = await listTasks(pool, scope);
-    expect(tasks.find((task) => task.id === "task-broken")?.status).toBe("failed");
+    expect(tasks.find((task) => task.id === `task-broken-${runId}`)?.status).toBe("failed");
   }, 120_000);
 
   /**

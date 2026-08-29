@@ -62,3 +62,28 @@ Tenant isolation would be silently disabled.
 
 If you are running Postgres yourself rather than through compose, create the
 application role the same way — see `appRoleSql()` in `packages/db`.
+
+## Durable execution (optional, and worth turning on)
+
+Nell keeps workflow state in a **second database on the same server**, so a task
+killed mid-flight resumes from its last completed step instead of being lost.
+Without it everything works; a crash simply loses whatever was in progress.
+
+It is a separate database rather than a schema because that state is not
+tenant-scoped: it would need row-level security policies that do not exist, and
+putting it beside application tables would mean writing them.
+
+Create it once, as a role that may create databases — the application role
+deliberately cannot:
+
+```sql
+CREATE DATABASE nell_dev_dbos_sys OWNER nell_app;
+```
+
+The name is your application database with `_dbos_sys` appended.
+
+**If it is missing, Nell still starts.** The engine is given ten seconds and
+then given up on, with a line in the log saying so. That bound exists because
+the failure mode without it is worse than the feature: a durable engine that
+cannot reach its system database _hangs_ rather than erroring, so the whole
+agent would never finish starting and the only symptom would be silence.

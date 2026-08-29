@@ -56,14 +56,29 @@ export class DbosDurableEngine implements DurableEngine {
     this.#launched = false;
   }
 
+  /**
+   * `runStep`, not `registerStep` — and the difference is the whole reason this
+   * adapter had never worked outside its own spike.
+   *
+   * `registerStep` declares a step *before the engine launches*; calling it
+   * while a workflow is running throws "DBOS code is being registered after
+   * DBOS.launch()". The port's `step(name, fn)` is by design an ad-hoc call from
+   * inside a running workflow — business code should not have to hoist every
+   * step to module scope to get a checkpoint — so the previous implementation
+   * could only ever have worked in a program that registered everything up
+   * front, which is exactly what the Phase 0 spike did. The spike passed, the
+   * adapter looked proven, and the one path a real caller would take threw on
+   * first use.
+   *
+   * `runStep` is the ad-hoc form: same checkpointing, no pre-registration.
+   */
   async step<T>(name: string, fn: () => Promise<T>, options?: StepOptions): Promise<T> {
-    const registered = DBOS.registerStep(fn, {
+    return DBOS.runStep(fn, {
       name,
       ...(options?.maxAttempts !== undefined
         ? { retriesAllowed: true, maxAttempts: options.maxAttempts }
         : {}),
     });
-    return registered();
   }
 
   async enqueue<T>(fn: () => Promise<T>, options: EnqueueOptions): Promise<T> {
@@ -104,6 +119,17 @@ export class DbosDurableEngine implements DurableEngine {
 
   async emitEvent<T>(eventKey: string, payload: T): Promise<void> {
     await DBOS.setEvent(eventKey, payload);
+  }
+
+  defineWorkflow<TInput>(
+    name: string,
+    handler: (input: TInput) => Promise<void>
+  ): (input: TInput) => Promise<void> {
+    return DBOS.registerWorkflow(handler, { name });
+  }
+
+  async runAs(id: string, fn: () => Promise<void>): Promise<void> {
+    await DBOS.withNextWorkflowID(id, fn);
   }
 }
 

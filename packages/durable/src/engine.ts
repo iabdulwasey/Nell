@@ -70,4 +70,30 @@ export interface DurableEngine {
 
   /** Deliver an event that a parked `waitForEvent` is waiting on. */
   emitEvent<T>(eventKey: string, payload: T): Promise<void>;
+
+  /**
+   * Register a workflow, once, before the engine launches.
+   *
+   * Ordering is a contract rather than a convention: launching is also what
+   * recovers workflows the previous process left unfinished, so a workflow not
+   * registered by then cannot be resumed — it is simply gone.
+   *
+   * The handler takes serializable input and nothing else. A closure cannot be
+   * checkpointed, so anything else it needs must be reachable from module state
+   * that the *new* process sets up before launching.
+   */
+  defineWorkflow<TInput>(
+    name: string,
+    handler: (input: TInput) => Promise<void>
+  ): (input: TInput) => Promise<void>;
+
+  /**
+   * Run a registered workflow under a caller-chosen id.
+   *
+   * The id is what makes recovery land on the right thing and what stops a
+   * duplicate: an engine refuses two workflows under one id, so a task already
+   * in flight cannot be started a second time by a message that arrives while
+   * the first is recovering.
+   */
+  runAs(id: string, fn: () => Promise<void>): Promise<void>;
 }

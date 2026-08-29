@@ -16,6 +16,7 @@ import { anthropicSearchProvider } from "@nell/integrations";
 import { imageTool, type Capability } from "@nell/agent";
 import { EnvKeyProvider } from "@nell/vault";
 import { auditSink, readAudit } from "./audit-store.js";
+import { installDurableTasks, shutdownDurableTasks } from "./durable-tasks.js";
 import { assertRlsEnforceable, createPool, withWorkspace } from "./db.js";
 import { run } from "./nell.js";
 import { vaultAccess } from "./vault-secrets.js";
@@ -185,6 +186,34 @@ const form =
     : undefined;
 if (form) console.log("vault: on");
 
+/**
+ * Durable execution, when a system database is reachable.
+ *
+ * Launching is also what recovers whatever the last process left unfinished, so
+ * this happens before the message poll starts — otherwise a recovered task and
+ * a fresh message could race for the same browser.
+ *
+ * Optional and quiet about it: an install without it works exactly as before,
+ * and loses a task if the process dies mid-flight. Refusing to start over a
+ * missing durable engine would be a worse trade than the guarantee is worth.
+ */
+const durableEngine = await installDurableTasks(databaseUrl!, {
+  run: async () => {
+    // Tasks are started by the message loop and made durable step by step; a
+    // recovered workflow re-enters those steps rather than being re-dispatched
+    // from here. Deliberately empty rather than absent, so a recovered
+    // workflow completes instead of throwing.
+  },
+  log: (line) => {
+    console.log(line);
+  },
+}).catch((error: unknown) => {
+  console.log(`durable: off — ${error instanceof Error ? error.message : "engine unavailable"}`);
+  return undefined;
+});
+
+if (durableEngine) console.log("durable: on");
+
 const controller = new AbortController();
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
@@ -290,6 +319,9 @@ await run(
     capabilities: new Set<Capability>(anthropicKey ? ["assist", "browse"] : ["browse"]),
     /** What was done, chained so an edit to the record is detectable. */
     audit: (scope) => readAudit(pool, scope),
+    ...(durableEngine
+      ? { durably: <T>(name: string, fn: () => Promise<T>) => durableEngine.step(name, fn) }
+      : {}),
     ...(search ? { search } : {}),
     log: (line) => {
       console.log(line);
@@ -299,6 +331,7 @@ await run(
 );
 
 await ticking;
+await shutdownDurableTasks();
 await form?.close();
 await sessions.close();
 await browser.shutdown();

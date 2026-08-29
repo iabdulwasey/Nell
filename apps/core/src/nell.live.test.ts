@@ -112,8 +112,12 @@ beforeAll(async () => {
   origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
 
   pool = createPool(url!);
-  await pool.query("TRUNCATE tasks, workspace_members, workspaces CASCADE");
-
+  /**
+   * No TRUNCATE. It used to wipe `workspaces CASCADE`, which locks every table
+   * referencing it and deletes the rows of any test file running beside this
+   * one — a victim that then fails on an assertion rather than on a lock, which
+   * is why those failures read as random.
+   */
   browser = new LocalBrowserProvider({ headless: true });
   sessions = new WorkspaceSessions({ provider: browser, startUrl: origin });
   options = {
@@ -144,7 +148,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!ready) return;
-  await pool.query("TRUNCATE tasks, workspace_members, workspaces CASCADE");
+
   await pool.end();
   await sessions.close();
   await browser.shutdown();

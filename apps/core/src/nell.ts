@@ -152,6 +152,14 @@ export interface NellOptions {
   };
   /** What was done, and whether the record of it still verifies. */
   readonly audit?: (scope: AccessScope) => Promise<AuditView>;
+  /**
+   * Runs one pipeline step durably, when an engine is configured.
+   *
+   * Threaded from `main` rather than resolved here, so nothing in this file
+   * knows which engine — or that there is one. Absent means steps simply run
+   * and a crash loses the task, which is a legitimate way to deploy.
+   */
+  readonly durably?: <T>(name: string, fn: () => Promise<T>) => Promise<T>;
   readonly keys: ProviderKeys;
   readonly modelId: string;
   readonly telegramToken: string;
@@ -740,6 +748,17 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         ...(options.assistModel ? { assistModel: options.assistModel } : {}),
         ...(options.tools?.length ? { tools: options.tools } : {}),
         ...(options.vault ? { credentials: options.vault.offers } : {}),
+        ...(options.durably
+          ? {
+              /**
+               * Scoped to this task, so two tasks cannot collide on a step name.
+               * The engine keys checkpoints by workflow *and* step, and a shared
+               * name across workflows is how one task returns another's result.
+               */
+              durably: <T>(name: string, fn: () => Promise<T>) =>
+                options.durably!(`${run.taskId}:${name}`, fn),
+            }
+          : {}),
         outputRoot: options.fileRoot,
         onStep: (note) => {
           log(`  ${note}`);
