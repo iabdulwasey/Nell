@@ -49,6 +49,11 @@ jobs:
       # The application role must NOT be able to bypass row-level security. A
       # superuser ignores every policy even on a FORCE'd table, so a suite run as
       # `postgres` would pass while proving the opposite of what it claims.
+      # Without this, 45 browser tests skip — and a skipped test is reported in
+      # the same summary line as a passing one.
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Provision the restricted application role
         run: |
           PGPASSWORD=postgres psql -h localhost -U postgres -d nell_test -v ON_ERROR_STOP=1 <<'SQL'
