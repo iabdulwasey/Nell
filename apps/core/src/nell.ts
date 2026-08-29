@@ -89,10 +89,14 @@ export interface NellOptions {
   /**
    * What this deployment can actually do.
    *
-   * Image generation needs a key this install may not have, and a plan that
-   * needs one should say so rather than fail obscurely partway through.
+   * `assist` needs a vendor with server-side tools; `image` needs one that makes
+   * pictures. A plan that reaches for something absent should say so rather than
+   * fail obscurely partway through.
    */
   readonly capabilities: ReadonlySet<Capability>;
+  /** Key and model for the assist step, when this install has one. */
+  readonly assistKey?: string;
+  readonly assistModel?: string;
   readonly keys: ProviderKeys;
   readonly modelId: string;
   readonly telegramToken: string;
@@ -481,6 +485,8 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         model: run.model,
         modelId: options.modelId,
         ...(options.search ? { search: options.search } : {}),
+        ...(options.assistKey ? { assistKey: options.assistKey } : {}),
+        ...(options.assistModel ? { assistModel: options.assistModel } : {}),
         outputRoot: options.fileRoot,
         onStep: (note) => {
           log(`  ${note}`);

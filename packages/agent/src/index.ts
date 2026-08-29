@@ -9,6 +9,13 @@
  */
 
 export {
+  assist,
+  type AssistOutcome,
+  type AssistRequest,
+  type ProducedFile,
+  type SuppliedFile,
+} from "./assistant.js";
+export {
   capabilitySchema,
   explainUnsupported,
   planWork,

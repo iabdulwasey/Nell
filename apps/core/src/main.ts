@@ -145,16 +145,17 @@ await run(
     sessions,
     executor,
     fileRoot,
+    ...(anthropicKey ? { assistKey: anthropicKey, assistModel: "claude-sonnet-4-5" } : {}),
     /**
-     * What this install can do.
+     * What this install can actually do.
      *
-     * `image` is absent: generating pictures needs a key from a provider that
-     * makes them, and none is configured. A plan that asks for one is told so
-     * rather than failing partway through with nothing to show.
+     * `assist` needs a vendor with server-side tools — searching and a code
+     * sandbox — which is where almost everything now happens. `image` is absent
+     * because generating pictures needs a vendor that makes them, and none is
+     * configured here. A plan reaching for either is told so rather than failing
+     * partway through with nothing to show.
      */
-    capabilities: new Set<Capability>(
-      search ? ["answer", "document", "search", "browse"] : ["answer", "document", "browse"]
-    ),
+    capabilities: new Set<Capability>(anthropicKey ? ["assist", "browse"] : ["browse"]),
     ...(search ? { search } : {}),
     log: (line) => {
       console.log(line);

@@ -52,26 +52,26 @@ describe("a question about a file the user sent", () => {
     });
 
     expect(plan.steps).toHaveLength(1);
-    expect(plan.steps[0]?.capability).toBe("answer");
+    expect(plan.steps[0]?.capability).toBe("assist");
     expect(asked, "no router call needed for a file plus a question").toBe(false);
   });
 
-  /** Unless the ask is for a *new* file, which is a different job. */
-  it("still routes when the user wants a document produced from it", async () => {
+  /**
+   * And producing the rewritten file is the *same* step, not a second one.
+   *
+   * There used to be an `answer` step feeding a `document` step here. A model
+   * that runs code writes the PDF in the same breath as the rewrite, so
+   * splitting them was a pipeline doing work the model already does.
+   */
+  it("does not need a second step to produce the file", async () => {
     const plan = await planWork({
       ...base,
-      provider: router({
-        summary: "Rewriting your CV.",
-        steps: [
-          { capability: "answer", instruction: "rewrite the resume" },
-          { capability: "document", instruction: "render it as a PDF" },
-        ],
-      }),
       message: "Rewrite my resume and send me a new PDF",
       files: ["resume.pdf"],
     });
 
-    expect(plan.steps.map((s) => s.capability)).toEqual(["answer", "document"]);
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.capability).toBe("assist");
   });
 });
 
@@ -80,20 +80,20 @@ describe("composing capabilities", () => {
    * The user's example. No single capability does this: pictures come from one
    * model, the file comes from a renderer, and the second needs the first.
    */
-  it("chains images into a document", async () => {
+  it("chains a picture step into the model that packages them", async () => {
     const plan = await planWork({
       ...base,
       provider: router({
         summary: "Making the images, then the PDF.",
         steps: [
           { capability: "image", instruction: "generate three illustrations" },
-          { capability: "document", instruction: "put all three into one PDF" },
+          { capability: "assist", instruction: "put all three into one PDF" },
         ],
       }),
-      message: "Create 3 images and pack them into one PDF",
+      message: "Create 3 illustrations and pack them into one PDF",
     });
 
-    expect(plan.steps.map((s) => s.capability)).toEqual(["image", "document"]);
+    expect(plan.steps.map((s) => s.capability)).toEqual(["image", "assist"]);
     // Each step carries its own brief, or the second has nothing to act on.
     expect(plan.steps[1]?.instruction).toContain("PDF");
   });
@@ -110,9 +110,9 @@ describe("when the model cannot be reached", () => {
     expect(plan.steps[0]?.capability).toBe("browse");
   });
 
-  it("falls back to search for something that plainly does not", async () => {
+  it("falls back to the model for something that plainly does not", async () => {
     const plan = await planWork({ ...base, provider: down, message: "What is the news today" });
-    expect(plan.steps[0]?.capability).toBe("search");
+    expect(plan.steps[0]?.capability).toBe("assist");
   });
 
   it("does the same when the router answers with nonsense", async () => {
@@ -131,11 +131,11 @@ describe("capabilities that are not bound", () => {
    * than a broken attempt or a silent omission from the result.
    */
   it("names what is missing rather than failing quietly", () => {
-    const bound = new Set<Capability>(["answer", "document", "search", "browse"]);
+    const bound = new Set<Capability>(["assist", "browse"]);
     const missing = unsupported(
       [
         { capability: "image", instruction: "draw" },
-        { capability: "document", instruction: "render" },
+        { capability: "assist", instruction: "write it up" },
       ],
       bound
     );
@@ -146,7 +146,7 @@ describe("capabilities that are not bound", () => {
   });
 
   it("says nothing when everything is available", () => {
-    const bound = new Set<Capability>(["answer", "browse"]);
-    expect(unsupported([{ capability: "answer", instruction: "x" }], bound)).toHaveLength(0);
+    const bound = new Set<Capability>(["assist", "browse"]);
+    expect(unsupported([{ capability: "assist", instruction: "x" }], bound)).toHaveLength(0);
   });
 });

@@ -126,7 +126,7 @@ beforeAll(async () => {
     sessions,
     executor: new BrowserExecutor({ driver: browser }),
     fileRoot: mkdtempSync(join(tmpdir(), "nell-files-")),
-    capabilities: new Set<Capability>(["answer", "document", "browse"]),
+    capabilities: new Set<Capability>(["browse"]),
   };
 
   // The stub replaces the network for Telegram only; the model and the browser

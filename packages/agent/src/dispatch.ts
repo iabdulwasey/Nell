@@ -20,11 +20,17 @@
  * — the user's files, its own knowledge, a search result — should never touch
  * one. Cheapest capable path first, every time.
  *
- * **Steps compose, and that is the point of a pipeline rather than a label.**
- * "Make three images and put them in one PDF" is an image step feeding a
- * document step; "research X and write it up" is a browse step feeding a
- * document step. The output of one is the input of the next, and no single
- * capability can do either job alone.
+ * **Almost everything is one step.** An earlier version of this had five
+ * capabilities — answer, document, image, search, browse — each hand-written,
+ * and that was the same mistake one level up: enumerating what a model can do
+ * reaches exactly the list somebody thought of. A model that searches and runs
+ * code covers producing a PDF, charting a file, converting a format and
+ * packaging several things into one, and it chains those itself, in a single
+ * request, better than a pipeline written in advance can.
+ *
+ * What remains genuinely separate is what that model cannot do: generate
+ * pictures, which needs a vendor that makes them, and operate a real site, which
+ * needs a session and cookies and a browser.
  */
 
 import { z } from "zod";
@@ -39,15 +45,32 @@ import type { CompletionOutcome, ModelProvider } from "./provider.js";
  * DeepSeek for GPT.
  */
 export const capabilitySchema = z.enum([
-  /** A model answers from what it already has: its knowledge and the user's files. */
-  "answer",
-  /** A file is produced — a PDF, a document — from text a model writes. */
-  "document",
-  /** Pictures are generated. */
+  /**
+   * The model does it: answers, searches the web, writes and runs code, and
+   * produces whatever files that yields.
+   *
+   * One capability rather than four, and the collapse is the point. There were
+   * separate `answer`, `search` and `document` capabilities here, each
+   * hand-written, and the hand-written `document` one rendered HTML through
+   * Chromium — which made PDFs from HTML and nothing else. A model that can run
+   * code makes the PDF, and also the chart, the conversion, the five images
+   * packaged into one file, and the thing nobody listed. Enumerating
+   * capabilities reaches exactly the list someone thought of.
+   */
+  "assist",
+  /**
+   * Pictures are generated, which needs a vendor that makes them.
+   *
+   * Kept separate precisely because it is *not* covered by the above: code
+   * execution draws charts, and no amount of Python invents a photograph.
+   */
   "image",
-  /** The live web is searched; results are read, nothing is clicked. */
-  "search",
-  /** A page must be driven: logged into, filled in, clicked through. */
+  /**
+   * A page must be driven: logged into, filled in, clicked through.
+   *
+   * The one thing a model with server-side tools cannot do — it has no session,
+   * no cookies and no logins. Which is what a browser was always for.
+   */
   "browse",
 ]);
 
@@ -75,8 +98,8 @@ export interface Dispatch {
 const OBVIOUSLY_BROWSING =
   /\b(book|buy|order|purchase|reserve|check ?out|log ?in|sign ?in|apply|cancel my|pay for)\b/iu;
 
-const OBVIOUSLY_A_DOCUMENT =
-  /\b(make|create|write|generate|produce|give me|send me|export)\b[^.?!]*\b(pdf|document|doc|docx|report|deck|letter|cv|resume|invoice|summary document)\b/iu;
+const OBVIOUSLY_PICTURES =
+  /\b(image|images|picture|pictures|photo|photos|illustration|illustrations|logo|artwork)\b/iu;
 
 const dispatchSchema = {
   type: "object",
@@ -100,12 +123,12 @@ const dispatchSchema = {
             type: "string",
             enum: capabilitySchema.options,
             description:
-              "answer: a model replies from its knowledge or the user's files. " +
-              "document: produce a PDF or document file. " +
-              "image: generate pictures. " +
-              "search: look things up on the web and read the results. " +
-              "browse: drive a page — click, fill in, log in. Slowest and most fragile; " +
-              "use only when the task needs interaction with a site.",
+              "assist: the model answers, searches the web, and runs code — this covers " +
+              "almost everything, including producing PDFs, charts, spreadsheets and " +
+              "conversions. " +
+              "image: generate pictures, which needs a separate image model. " +
+              "browse: drive a real page — click, fill in, log in, check out. Slowest and " +
+              "most fragile; use only when the task needs a site actually operated.",
           },
           instruction: {
             type: "string",
@@ -160,10 +183,10 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
    * resume the user just sent — is a round trip to be told something already
    * known.
    */
-  if (files.length > 0 && !OBVIOUSLY_A_DOCUMENT.test(request.message)) {
+  if (files.length > 0 && !OBVIOUSLY_PICTURES.test(request.message)) {
     return {
       summary: "Reading what you sent.",
-      steps: [{ capability: "answer", instruction: request.message }],
+      steps: [{ capability: "assist", instruction: request.message }],
     };
   }
 
@@ -172,13 +195,17 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
     system: [
       "Decide what a request needs, and choose the cheapest way that will actually work.",
       "",
-      "A browser is slow, often blocked by captchas, and can fail outright. Use it only",
-      "when the task needs a page driven — booking, buying, logging in, filling a form.",
-      "To look something up, use search. To answer from knowledge or from a file the user",
-      "sent, use answer. Never open a browser for something you already know.",
+      "Almost everything is `assist`: the model can answer, search the live web, and write",
+      "and run code — so producing a PDF, charting data, converting a file or packaging",
+      "several into one are all a single assist step, not several.",
       "",
-      "Steps run in order and feed each other: images then a document, or search then a",
-      "document. Use the fewest steps that do the job.",
+      "A browser is slow, often blocked by captchas, and can fail outright. Use it only",
+      "when a real site must be operated: booking, buying, logging in, filling a form.",
+      "Never open one for something the model can work out or look up.",
+      "",
+      "Use one step unless the job genuinely needs a different capability part-way —",
+      "generating pictures then packaging them, or browsing for something then writing it",
+      "up. Steps run in order and feed each other.",
       files.length > 0 ? `\nThe user has sent: ${files.join(", ")}.` : "",
     ].join("\n"),
     schema: dispatchSchema,
@@ -200,7 +227,7 @@ function fallback(message: string): Dispatch {
     summary: "Having a look.",
     steps: [
       {
-        capability: OBVIOUSLY_BROWSING.test(message) ? "browse" : "search",
+        capability: OBVIOUSLY_BROWSING.test(message) ? "browse" : "assist",
         instruction: message,
       },
     ],
@@ -225,10 +252,8 @@ export function unsupported(
 
 export function explainUnsupported(missing: readonly Capability[]): string {
   const names: Readonly<Record<Capability, string>> = {
-    answer: "answer questions",
-    document: "produce documents",
+    assist: "work that out",
     image: "generate images",
-    search: "search the web",
     browse: "use a browser",
   };
 
