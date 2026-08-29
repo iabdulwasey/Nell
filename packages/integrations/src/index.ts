@@ -60,3 +60,28 @@ export {
   type MailSummary,
   type ReadMailOptions,
 } from "./gmail.js";
+
+export {
+  callTool,
+  checkForDrift,
+  explainProblem,
+  fingerprintTool,
+  mcpToolSchema,
+  qualify,
+  registerTools,
+  renderResult,
+  renderTools,
+  MAX_DESCRIPTION_LENGTH,
+  MAX_RESULT_LENGTH,
+  MAX_TOOLS_PER_SERVER,
+  type CallOptions,
+  type DriftCheck,
+  type DriftReason,
+  type McpClient,
+  type McpResult,
+  type McpServerConfig,
+  type McpTool,
+  type RegisteredTool,
+  type Registration,
+  type RegistrationProblem,
+} from "./mcp.js";

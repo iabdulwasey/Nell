@@ -13,6 +13,7 @@
   "dependencies": {
     "@nell/aegis": "workspace:*",
     "@nell/browser": "workspace:*",
+    "@nell/integrations": "workspace:*",
     "@nell/payments": "workspace:*",
     "@nell/shared": "workspace:*",
     "zod": "4.4.3"
