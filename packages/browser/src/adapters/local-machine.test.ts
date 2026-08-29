@@ -14,16 +14,9 @@ import type { AddressInfo } from "node:net";
 import { accessScopeForUser } from "@nell/shared";
 import { chromium } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { chromiumAvailable } from "./computer-exec.js";
 import { MachineRegistry } from "../machine.js";
 import { LocalMachineHost } from "./local-machine.js";
-
-function chromiumAvailable(): boolean {
-  try {
-    return existsSync(chromium.executablePath());
-  } catch {
-    return false;
-  }
-}
 
 const describeBrowser = chromiumAvailable() ? describe : describe.skip;
 

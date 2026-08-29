@@ -11,6 +11,7 @@ export { LocalBrowserProvider, type FileResolver, type LocalBrowserOptions } fro
 export { LocalMachineHost, type LocalMachineOptions } from "./local-machine.js";
 
 export {
+  chromiumAvailable,
   playwrightKey,
   runComputerActions,
   screenshotOf,

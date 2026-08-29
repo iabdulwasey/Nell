@@ -8,7 +8,24 @@
  * modifier.
  */
 
-import type { Page } from "playwright-core";
+import { existsSync } from "node:fs";
+import { chromium, type Page } from "playwright-core";
+
+/**
+ * Whether a real browser is installed.
+ *
+ * `executablePath()` returns a path whether or not the browser was ever
+ * downloaded, so the path alone proves nothing — the file has to exist. Lives
+ * here so callers can skip browser-dependent tests without taking a dependency
+ * on Playwright themselves.
+ */
+export function chromiumAvailable(): boolean {
+  try {
+    return existsSync(chromium.executablePath());
+  } catch {
+    return false;
+  }
+}
 import type { ComputerAction, CoordinateSpace, KeyName, Point } from "../computer.js";
 import { projectAction } from "../computer.js";
 

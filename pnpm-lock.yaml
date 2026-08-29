@@ -38,6 +38,9 @@ importers:
       '@nell/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@nell/browser':
+        specifier: workspace:*
+        version: link:../../packages/browser
       '@nell/channels':
         specifier: workspace:*
         version: link:../../packages/channels

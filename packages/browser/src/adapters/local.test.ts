@@ -15,24 +15,9 @@ import type { AddressInfo } from "node:net";
 import { accessScopeForUser } from "@nell/shared";
 import { chromium } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { chromiumAvailable } from "./computer-exec.js";
 import { toDisplay, type Point } from "../computer.js";
 import { LocalBrowserProvider } from "./local.js";
-
-/**
- * These tests need a real Chromium. Rather than fail on a machine that has not
- * run `playwright install`, the suite skips itself — a contributor who has not
- * downloaded browsers still gets a green run, and CI installs Chromium so the
- * coverage is real where it counts.
- */
-function chromiumAvailable(): boolean {
-  try {
-    // executablePath() returns a path whether or not the browser was ever
-    // downloaded, so the path alone proves nothing — check it exists on disk.
-    return existsSync(chromium.executablePath());
-  } catch {
-    return false;
-  }
-}
 
 const describeBrowser = chromiumAvailable() ? describe : describe.skip;
 
