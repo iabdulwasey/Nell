@@ -28,6 +28,7 @@ import {
   providerFor,
   unsupported,
   type Capability,
+  type ClientTool,
   type ModelCapability,
   type ModelProvider,
   type ProviderKeys,
@@ -101,6 +102,8 @@ export interface NellOptions {
   /** Key and model for the assist step, when this install has one. */
   readonly assistKey?: string;
   readonly assistModel?: string;
+  /** Specialists the model may call — a vendor that draws, for instance. */
+  readonly tools?: readonly ClientTool[];
   /**
    * Per-capability model overrides, so an install can be complete when no single
    * vendor is — one model to reason, another to draw.
@@ -524,6 +527,7 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         ...(options.search ? { search: options.search } : {}),
         ...(options.assistKey ? { assistKey: options.assistKey } : {}),
         ...(options.assistModel ? { assistModel: options.assistModel } : {}),
+        ...(options.tools?.length ? { tools: options.tools } : {}),
         outputRoot: options.fileRoot,
         onStep: (note) => {
           log(`  ${note}`);

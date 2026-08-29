@@ -8,6 +8,7 @@
  * Governed by: docs/architecture.md
  */
 
+export { DEFAULT_IMAGE_MODEL, imageTool, type ImageToolOptions } from "./image.js";
 export {
   capabilitiesOf,
   CAPABILITY_LABELS,
@@ -26,6 +27,7 @@ export {
   assist,
   type AssistOutcome,
   type AssistRequest,
+  type ClientTool,
   type ProducedFile,
   type SuppliedFile,
 } from "./assistant.js";

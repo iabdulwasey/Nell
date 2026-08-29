@@ -13,7 +13,7 @@ import { keysFromEnv, providerFor } from "@nell/agent";
 import { LocalBrowserProvider } from "@nell/browser/adapters";
 import { accessScopeForUser } from "@nell/shared";
 import { anthropicSearchProvider } from "@nell/integrations";
-import type { Capability } from "@nell/agent";
+import { imageTool, type Capability } from "@nell/agent";
 import { assertRlsEnforceable, createPool } from "./db.js";
 import { run } from "./nell.js";
 import { runTicker } from "./ticker.js";
@@ -87,6 +87,16 @@ const executor = new BrowserExecutor({ driver: browser });
  * still works and simply cannot get past a search engine's captcha.
  */
 const anthropicKey = process.env["ANTHROPIC_API_KEY"];
+
+/**
+ * A vendor that draws.
+ *
+ * Anthropic reasons, reads and runs code but cannot make a picture, so this is
+ * handed to it as a tool rather than being routed to in advance — it decides
+ * when a picture is wanted and writes the prompt itself.
+ */
+const googleKey = process.env["GOOGLE_API_KEY"];
+const specialists = googleKey ? [imageTool({ apiKey: googleKey })] : [];
 const search = anthropicKey ? anthropicSearchProvider({ apiKey: anthropicKey }) : undefined;
 
 const controller = new AbortController();
@@ -155,11 +165,12 @@ await run(
       [
         anthropicKey ? "anthropic" : "",
         process.env["OPENAI_API_KEY"] ? "openai" : "",
-        process.env["GOOGLE_API_KEY"] ? "google" : "",
+        googleKey ? "google" : "",
         process.env["DEEPSEEK_API_KEY"] ? "deepseek" : "",
       ].filter(Boolean)
     ),
     ...(anthropicKey ? { assistKey: anthropicKey, assistModel: "claude-sonnet-4-5" } : {}),
+    ...(specialists.length > 0 ? { tools: specialists } : {}),
     /**
      * What this install can actually do.
      *

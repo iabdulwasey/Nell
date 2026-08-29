@@ -52,6 +52,28 @@ export interface SuppliedFile {
   readonly data: Uint8Array;
 }
 
+/**
+ * A tool we run ourselves, on behalf of the model.
+ *
+ * Search and code execution run inside the vendor, which is why they cost one
+ * request and no loop. Anything else — another vendor's image model, a
+ * calculator, an internal API — has to come back to us, be executed here, and be
+ * handed back. That round trip is the whole mechanism behind "one model hands
+ * off to another": the specialist is a tool, and the model decides when to reach
+ * for it rather than a pipeline deciding in advance.
+ */
+export interface ClientTool {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: Record<string, unknown>;
+  /**
+   * Returns what the model should be told, and any files produced. A thrown
+   * error becomes a tool error the model can read and work around — a failed
+   * tool is information, not the end of the task.
+   */
+  run(input: unknown): Promise<{ readonly text: string; readonly files?: readonly ProducedFile[] }>;
+}
+
 export interface AssistRequest {
   readonly apiKey: string;
   readonly model: string;
@@ -61,6 +83,10 @@ export interface AssistRequest {
   /** Off by default: each is a real capability with a real bill. */
   readonly search?: boolean;
   readonly code?: boolean;
+  /** Tools we execute here, for anything the vendor cannot do itself. */
+  readonly tools?: readonly ClientTool[];
+  /** Bound, because a model that keeps calling tools would otherwise never stop. */
+  readonly maxTurns?: number;
   readonly maxTokens?: number;
   readonly timeoutMs?: number;
   readonly fetchImpl?: typeof fetch;
@@ -78,6 +104,7 @@ const blockSchema = z.object({
   type: z.string(),
   text: z.string().optional(),
   name: z.string().optional(),
+  id: z.string().optional(),
   input: z.unknown().optional(),
   content: z.unknown().optional(),
 });
@@ -151,6 +178,13 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
   const tools: Record<string, unknown>[] = [];
   if (request.search) tools.push({ type: "web_search_20250305", name: "web_search", max_uses: 5 });
   if (request.code) tools.push({ type: "code_execution_20250522", name: "code_execution" });
+  for (const tool of request.tools ?? []) {
+    tools.push({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+    });
+  }
 
   /**
    * The user's files, handed to the sandbox.
@@ -164,98 +198,152 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
     if (id) uploaded.push(id);
   }
 
-  let response: Response;
-  try {
-    response = await fetchImpl("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      signal: AbortSignal.timeout(request.timeoutMs ?? 300_000),
-      headers: {
-        "x-api-key": request.apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": BETAS,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: request.model,
-        max_tokens: request.maxTokens ?? 8192,
-        system: request.system,
-        ...(tools.length > 0 ? { tools } : {}),
-        messages: [
-          {
-            role: "user",
-            content: [
-              ...uploaded.map((id) => ({ type: "container_upload", file_id: id })),
-              { type: "text", text: request.prompt },
-            ],
-          },
-        ],
-      }),
-    });
-  } catch (error) {
-    return {
-      ok: false,
-      reason: error instanceof Error ? error.message : "request failed",
-      retryable: true,
-    };
-  }
-
-  if (!response.ok) {
-    const status = response.status;
-    return {
-      ok: false,
-      reason: `${String(status)} from the model`,
-      // 4xx other than rate limiting will fail identically on a retry.
-      retryable: status === 429 || status >= 500,
-    };
-  }
-
-  const parsed = responseSchema.safeParse(await response.json());
-  if (!parsed.success) return { ok: false, reason: "unexpected reply shape", retryable: true };
+  const said: string[] = [];
+  const preamble: string[] = [];
+  const files: ProducedFile[] = [];
 
   /**
-   * Only what it said *after* the work.
+   * The conversation so far.
    *
-   * A model narrates before reaching for a tool — "I'll analyse your resume, let
-   * me first extract the content" — and joining every text block hands the user
-   * that preamble ahead of the answer. The blocks after the last tool result are
-   * the conclusion; everything before them is throat-clearing about work that
-   * has since happened.
+   * Grows only when a client tool runs: the vendor's own tools resolve inside a
+   * single response, so an assist that needs none is still one request. This is
+   * the loop that "hand off to another model" actually is.
    */
-  const preamble: string[] = [];
-  let said: string[] = [];
-  const fileIds: string[] = [];
+  const messages: Record<string, unknown>[] = [
+    {
+      role: "user",
+      content: [
+        ...uploaded.map((id) => ({ type: "container_upload", file_id: id })),
+        { type: "text", text: request.prompt },
+      ],
+    },
+  ];
 
-  for (const block of parsed.data.content) {
-    if (block.type === "text" && block.text) said.push(block.text);
-
-    if (block.type === "server_tool_use") {
-      request.onStep?.(block.name === "web_search" ? "Searching." : "Working it out.");
-      // A tool ran, so anything said before it was preamble.
-      preamble.push(...said);
-      said = [];
+  for (let turn = 0; turn < (request.maxTurns ?? 6); turn += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        signal: AbortSignal.timeout(request.timeoutMs ?? 300_000),
+        headers: {
+          "x-api-key": request.apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": BETAS,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: request.model,
+          max_tokens: request.maxTokens ?? 8192,
+          system: request.system,
+          ...(tools.length > 0 ? { tools } : {}),
+          messages,
+        }),
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : "request failed",
+        retryable: true,
+      };
     }
 
-    // Files come back nested inside a tool result, one id per artefact.
-    if (block.type === "code_execution_tool_result") {
-      const inner = (
-        block.content as { content?: { type?: string; file_id?: string }[] } | undefined
-      )?.content;
-      for (const item of inner ?? []) {
-        if (item.type === "code_execution_output" && item.file_id) fileIds.push(item.file_id);
+    if (!response.ok) {
+      const status = response.status;
+      return {
+        ok: false,
+        reason: `${String(status)} from the model`,
+        // 4xx other than rate limiting will fail identically on a retry.
+        retryable: status === 429 || status >= 500,
+      };
+    }
+
+    const parsed = responseSchema.safeParse(await response.json());
+    if (!parsed.success) return { ok: false, reason: "unexpected reply shape", retryable: true };
+
+    const calls: { id: string; name: string; input: unknown }[] = [];
+    const fileIds: string[] = [];
+
+    for (const block of parsed.data.content) {
+      if (block.type === "text" && block.text) said.push(block.text);
+
+      if (block.type === "server_tool_use") {
+        request.onStep?.(block.name === "web_search" ? "Searching." : "Working it out.");
+        // A tool ran, so anything said before it was preamble.
+        preamble.push(...said);
+        said.length = 0;
+      }
+
+      if (block.type === "tool_use" && block.id && block.name) {
+        calls.push({ id: block.id, name: block.name, input: block.input });
+      }
+
+      // Files come back nested inside a tool result, one id per artefact.
+      if (block.type === "code_execution_tool_result") {
+        const inner = (
+          block.content as { content?: { type?: string; file_id?: string }[] } | undefined
+        )?.content;
+        for (const item of inner ?? []) {
+          if (item.type === "code_execution_output" && item.file_id) fileIds.push(item.file_id);
+        }
       }
     }
-  }
 
-  const files: ProducedFile[] = [];
-  for (const [index, id] of fileIds.entries()) {
-    const fetched = await download(request, id);
-    if (fetched) {
-      files.push({
-        name: nameFor(said.join(" "), fetched.mediaType, index),
-        mediaType: fetched.mediaType,
-        data: fetched.data,
-      });
+    for (const [index, id] of fileIds.entries()) {
+      const fetched = await download(request, id);
+      if (fetched) {
+        files.push({
+          name: nameFor(said.join(" "), fetched.mediaType, files.length + index),
+          mediaType: fetched.mediaType,
+          data: fetched.data,
+        });
+      }
     }
+
+    // Nothing for us to run, so the model is finished.
+    if (calls.length === 0) break;
+
+    /**
+     * Run what it asked for, and hand every result back in one turn.
+     *
+     * A failing tool becomes a tool error rather than an exception: the model
+     * can read "that model is out of quota" and say so, or try another way,
+     * where a thrown error just ends the task.
+     */
+    preamble.push(...said);
+    said.length = 0;
+
+    messages.push({ role: "assistant", content: parsed.data.content });
+
+    const results: Record<string, unknown>[] = [];
+    for (const call of calls) {
+      const tool = request.tools?.find((candidate) => candidate.name === call.name);
+      request.onStep?.(`Using ${call.name}.`);
+
+      if (!tool) {
+        results.push({
+          type: "tool_result",
+          tool_use_id: call.id,
+          is_error: true,
+          content: `No tool named ${call.name} is available.`,
+        });
+        continue;
+      }
+
+      try {
+        const outcome = await tool.run(call.input);
+        files.push(...(outcome.files ?? []));
+        results.push({ type: "tool_result", tool_use_id: call.id, content: outcome.text });
+      } catch (error) {
+        results.push({
+          type: "tool_result",
+          tool_use_id: call.id,
+          is_error: true,
+          content: error instanceof Error ? error.message : "the tool failed",
+        });
+      }
+    }
+
+    messages.push({ role: "user", content: results });
   }
 
   /**

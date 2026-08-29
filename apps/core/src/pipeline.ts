@@ -19,7 +19,7 @@
  */
 
 import { BrowserExecutor } from "@nell/aegis";
-import { assist, type ModelProvider, type Step } from "@nell/agent";
+import { assist, type ClientTool, type ModelProvider, type Step } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
 import type { SearchProvider } from "@nell/integrations";
 import type { AccessScope } from "@nell/shared";
@@ -45,6 +45,14 @@ export interface PipelineDeps {
    */
   readonly assistKey?: string;
   readonly assistModel?: string;
+  /**
+   * Specialists the model may call — image generation today, more later.
+   *
+   * Handed to the model rather than routed to in advance: it decides when a
+   * picture is wanted and writes the prompt itself, which is what makes "one
+   * model hands off to another" a tool call rather than a pipeline.
+   */
+  readonly tools?: readonly ClientTool[];
   /** Where produced files are written before being sent. */
   readonly outputRoot: string;
   readonly onStep?: (note: string) => void;
@@ -131,6 +139,7 @@ export async function runPipeline(
           })),
           search: true,
           code: true,
+          ...(deps.tools?.length ? { tools: deps.tools } : {}),
           ...(deps.onStep ? { onStep: deps.onStep } : {}),
         });
 
@@ -181,16 +190,6 @@ export async function runPipeline(
         if (!outcome.ok) return { ok: false, text: outcome.reason, files: produced };
         carried = outcome.answer || outcome.summary;
         break;
-      }
-
-      case "image": {
-        // Modelled, unbound. Code execution draws charts; no amount of Python
-        // invents a photograph, so this needs a vendor that makes pictures.
-        return {
-          ok: false,
-          text: "I can't generate images yet — that needs an image model key, which isn't configured.",
-          files: produced,
-        };
       }
     }
   }

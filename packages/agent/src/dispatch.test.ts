@@ -80,22 +80,26 @@ describe("composing capabilities", () => {
    * The user's example. No single capability does this: pictures come from one
    * model, the file comes from a renderer, and the second needs the first.
    */
-  it("chains a picture step into the model that packages them", async () => {
+  /**
+   * "Three images into one PDF" is one step, not two.
+   *
+   * It was two while drawing was its own capability. Once image generation is a
+   * tool the model calls mid-task, the model draws three times and packages them
+   * without a plan being written in advance — which is the same lesson as the
+   * rest of this file, reached once more from the other direction.
+   */
+  it("does not need a separate step for pictures", async () => {
     const plan = await planWork({
       ...base,
       provider: router({
         summary: "Making the images, then the PDF.",
-        steps: [
-          { capability: "image", instruction: "generate three illustrations" },
-          { capability: "assist", instruction: "put all three into one PDF" },
-        ],
+        steps: [{ capability: "assist", instruction: "draw three, then package them" }],
       }),
       message: "Create 3 illustrations and pack them into one PDF",
     });
 
-    expect(plan.steps.map((s) => s.capability)).toEqual(["image", "assist"]);
-    // Each step carries its own brief, or the second has nothing to act on.
-    expect(plan.steps[1]?.instruction).toContain("PDF");
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.capability).toBe("assist");
   });
 });
 
@@ -131,17 +135,17 @@ describe("capabilities that are not bound", () => {
    * than a broken attempt or a silent omission from the result.
    */
   it("names what is missing rather than failing quietly", () => {
-    const bound = new Set<Capability>(["assist", "browse"]);
+    const bound = new Set<Capability>(["browse"]);
     const missing = unsupported(
       [
-        { capability: "image", instruction: "draw" },
         { capability: "assist", instruction: "write it up" },
+        { capability: "browse", instruction: "open the page" },
       ],
       bound
     );
 
-    expect(missing).toEqual(["image"]);
-    expect(explainUnsupported(missing)).toContain("generate images");
+    expect(missing).toEqual(["assist"]);
+    expect(explainUnsupported(missing)).toContain("work that out");
     expect(explainUnsupported(missing)).toContain("model key");
   });
 

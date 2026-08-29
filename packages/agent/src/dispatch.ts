@@ -28,9 +28,13 @@
  * packaging several things into one, and it chains those itself, in a single
  * request, better than a pipeline written in advance can.
  *
- * What remains genuinely separate is what that model cannot do: generate
- * pictures, which needs a vendor that makes them, and operate a real site, which
- * needs a session and cookies and a browser.
+ * What remains genuinely separate is the one thing that model cannot do:
+ * operate a real site, which needs a session, cookies and a browser.
+ *
+ * Drawing was a third capability here until image generation became a *tool* the
+ * model calls mid-task. A specialist reached for during the work does not need a
+ * step planned in advance — which is the same lesson as the rest of this file,
+ * arrived at once more from the other direction.
  */
 
 import { z } from "zod";
@@ -58,13 +62,6 @@ export const capabilitySchema = z.enum([
    * capabilities reaches exactly the list someone thought of.
    */
   "assist",
-  /**
-   * Pictures are generated, which needs a vendor that makes them.
-   *
-   * Kept separate precisely because it is *not* covered by the above: code
-   * execution draws charts, and no amount of Python invents a photograph.
-   */
-  "image",
   /**
    * A page must be driven: logged into, filled in, clicked through.
    *
@@ -98,9 +95,6 @@ export interface Dispatch {
 const OBVIOUSLY_BROWSING =
   /\b(book|buy|order|purchase|reserve|check ?out|log ?in|sign ?in|apply|cancel my|pay for)\b/iu;
 
-const OBVIOUSLY_PICTURES =
-  /\b(image|images|picture|pictures|photo|photos|illustration|illustrations|logo|artwork)\b/iu;
-
 const dispatchSchema = {
   type: "object",
   properties: {
@@ -123,10 +117,9 @@ const dispatchSchema = {
             type: "string",
             enum: capabilitySchema.options,
             description:
-              "assist: the model answers, searches the web, and runs code — this covers " +
-              "almost everything, including producing PDFs, charts, spreadsheets and " +
-              "conversions. " +
-              "image: generate pictures, which needs a separate image model. " +
+              "assist: the model answers, searches the web, runs code, and calls out to " +
+              "other models for anything it cannot do itself — this covers almost " +
+              "everything, including PDFs, charts, spreadsheets, conversions and pictures. " +
               "browse: drive a real page — click, fill in, log in, check out. Slowest and " +
               "most fragile; use only when the task needs a site actually operated.",
           },
@@ -183,7 +176,7 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
    * resume the user just sent — is a round trip to be told something already
    * known.
    */
-  if (files.length > 0 && !OBVIOUSLY_PICTURES.test(request.message)) {
+  if (files.length > 0) {
     return {
       summary: "Reading what you sent.",
       steps: [{ capability: "assist", instruction: request.message }],
@@ -253,7 +246,6 @@ export function unsupported(
 export function explainUnsupported(missing: readonly Capability[]): string {
   const names: Readonly<Record<Capability, string>> = {
     assist: "work that out",
-    image: "generate images",
     browse: "use a browser",
   };
 
