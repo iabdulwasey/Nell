@@ -52,7 +52,7 @@ jobs:
       # Without this, 45 browser tests skip — and a skipped test is reported in
       # the same summary line as a passing one.
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm browsers:install
 
       - name: Provision the restricted application role
         run: |
