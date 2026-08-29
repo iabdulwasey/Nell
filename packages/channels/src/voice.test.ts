@@ -16,7 +16,10 @@ import {
   recordingRequest,
   reportCall,
   startCall,
+  cheapestRealtime,
+  planForNote,
   REALTIME_MODELS,
+  REALTIME_MODEL_OPTIONS,
   type CallState,
 } from "./index.js";
 
@@ -273,5 +276,89 @@ describe("explaining a refusal", () => {
     ] as const) {
       expect(explainVoiceRefusal(reason).length).toBeGreaterThan(10);
     }
+  });
+});
+
+describe("a call and a voice note are not the same problem", () => {
+  /**
+   * A call is live: someone is holding a phone waiting, so latency is the whole
+   * game and a speech-to-speech model earns its price. A note has already
+   * finished arriving — nobody is waiting on a half-second budget, so the
+   * expensive path buys nothing. Treating them identically is how a product ends
+   * up paying call prices to answer a message that sat in a queue for six
+   * minutes.
+   */
+  it("answers a note with a model that can simply listen", () => {
+    const plan = planForNote("google/gemini-3.5-flash", "deepgram/nova");
+
+    expect(plan.kind).toBe("native-audio");
+    if (plan.kind === "native-audio") {
+      expect(plan.model).toBe("google/gemini-3.5-flash");
+      expect(plan.why).toContain("tone and emphasis");
+    }
+  });
+
+  // "No, the LATER flight" is a different sentence with the stress removed.
+  it("prefers hearing the recording over reading a transcript of it", () => {
+    expect(planForNote("openai/gpt-5.6", "deepgram/nova").kind).toBe("native-audio");
+  });
+
+  it("transcribes first when the chosen model cannot listen", () => {
+    const plan = planForNote("deepseek/deepseek-v3", "deepgram/nova");
+
+    expect(plan.kind).toBe("transcribe-then-answer");
+    if (plan.kind === "transcribe-then-answer") {
+      expect(plan.transcriber).toBe("deepgram/nova");
+      expect(plan.why).toContain("cannot listen");
+    }
+  });
+
+  it("still works for a fully self-hosted setup", () => {
+    const plan = planForNote("self-hosted/local", "self-hosted/whisper");
+    expect(plan.kind).toBe("transcribe-then-answer");
+  });
+
+  // Reaching for a realtime model here would be paying call prices to answer a
+  // message that has already been waiting.
+  it("never reaches for a realtime model to answer a note", () => {
+    const plan = planForNote("deepseek/deepseek-v3", "deepgram/nova");
+    const used = plan.kind === "native-audio" ? [plan.model] : [plan.transcriber, plan.reasoner];
+    for (const model of used) expect(REALTIME_MODELS).not.toContain(model);
+  });
+});
+
+describe("choosing between the realtime vendors", () => {
+  /**
+   * The two are close enough in quality that cost is the sensible tiebreaker,
+   * and both are subject to change — so the choice is data rather than a
+   * preference baked into the code.
+   */
+  it("picks the cheaper of the two", () => {
+    const chosen = cheapestRealtime(["openai", "google"]);
+    const cheapest = [...REALTIME_MODEL_OPTIONS].sort(
+      (a, b) => a.costPerMinute - b.costPerMinute
+    )[0];
+    expect(chosen?.id).toBe(cheapest?.id);
+  });
+
+  // The cheapest model nobody can call is not a saving.
+  it("only picks a vendor the deployment can actually reach", () => {
+    expect(cheapestRealtime(["openai"])?.vendor).toBe("openai");
+    expect(cheapestRealtime(["google"])?.vendor).toBe("google");
+  });
+
+  // So the caller falls back to the pipeline rather than placing a call that
+  // connects to silence.
+  it("returns nothing when neither vendor is available", () => {
+    expect(cheapestRealtime([])).toBeUndefined();
+    expect(cheapestRealtime(["anthropic"])).toBeUndefined();
+  });
+
+  it("follows the prices rather than a hard-coded winner", () => {
+    const flipped = [
+      { id: "openai/gpt-realtime", costPerMinute: 5, vendor: "openai" as const },
+      { id: "google/gemini-live", costPerMinute: 90, vendor: "google" as const },
+    ];
+    expect(cheapestRealtime(["openai", "google"], flipped)?.vendor).toBe("openai");
   });
 });

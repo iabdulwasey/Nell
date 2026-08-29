@@ -72,8 +72,113 @@ export interface VoiceModelChoice {
   readonly speaker?: string;
 }
 
-/** Models that can hold a spoken conversation directly. */
-export const REALTIME_MODELS: readonly string[] = ["openai/gpt-realtime", "google/gemini-live"];
+/**
+ * Spoken audio arrives two ways, and they are not the same problem.
+ *
+ * A **call** is live and duplex. Someone is holding a phone waiting for a reply,
+ * so latency is the whole game and a speech-to-speech model earns its price.
+ *
+ * A **note** — a WhatsApp or iMessage voice message — has already finished
+ * arriving. Nobody is waiting on a half-second budget, which means the expensive
+ * realtime path buys nothing at all. Treating the two identically is how a
+ * product ends up paying call prices to answer a message that sat in a queue for
+ * six minutes.
+ */
+export const voiceMediumSchema = z.enum(["call", "note"]);
+export type VoiceMedium = z.infer<typeof voiceMediumSchema>;
+
+export interface RealtimeModel {
+  readonly id: string;
+  /** Cost per minute of conversation, in minor units. Audio is billed by time. */
+  readonly costPerMinute: number;
+  readonly vendor: "openai" | "google";
+}
+
+/**
+ * Models that can hold a spoken conversation directly.
+ *
+ * Both are listed with a price because there is no reason to prefer one on
+ * principle: they are close enough in quality that cost is the sensible
+ * tiebreaker, and both are subject to change.
+ */
+export const REALTIME_MODEL_OPTIONS: readonly RealtimeModel[] = [
+  { id: "openai/gpt-realtime", costPerMinute: 24, vendor: "openai" },
+  { id: "google/gemini-live", costPerMinute: 18, vendor: "google" },
+];
+
+export const REALTIME_MODELS: readonly string[] = REALTIME_MODEL_OPTIONS.map((model) => model.id);
+
+/**
+ * Pick the cheaper realtime model a deployment can actually reach.
+ *
+ * Restricted to what has a key, because the cheapest model nobody can call is
+ * not a saving. Returns nothing when neither is available, so the caller falls
+ * back to the pipeline rather than placing a call that connects to silence.
+ */
+export function cheapestRealtime(
+  available: readonly string[],
+  options: readonly RealtimeModel[] = REALTIME_MODEL_OPTIONS
+): RealtimeModel | undefined {
+  return [...options]
+    .filter((model) => available.includes(model.vendor))
+    .sort((a, b) => a.costPerMinute - b.costPerMinute)[0];
+}
+
+/**
+ * Models that can listen to a recording, without holding a conversation.
+ *
+ * A far wider set than the realtime one, and much cheaper, because
+ * understanding an audio file is an ordinary multimodal capability rather than
+ * a live duplex stream. For a voice note this is the whole job.
+ */
+export const AUDIO_INPUT_MODELS: readonly string[] = [
+  "openai/gpt-5.6",
+  "google/gemini-3.5-flash",
+  "google/gemini-live",
+  "openai/gpt-realtime",
+];
+
+export type NotePlan =
+  | { readonly kind: "native-audio"; readonly model: string; readonly why: string }
+  | {
+      readonly kind: "transcribe-then-answer";
+      readonly transcriber: string;
+      readonly reasoner: string;
+      readonly why: string;
+    };
+
+/**
+ * How to answer a voice note.
+ *
+ * Prefers handing the audio straight to a model that can hear it: one step
+ * instead of two, and tone and emphasis survive, which a transcript flattens —
+ * "no, the *later* flight" is a different sentence with the stress removed.
+ *
+ * Falls back to transcribing first when the chosen model cannot listen, which is
+ * the case for most text models and for anything self-hosted. Both are cheap;
+ * neither needs a realtime model, and reaching for one here is paying call
+ * prices to answer a message that has already been waiting.
+ */
+export function planForNote(
+  reasoner: string,
+  transcriber: string,
+  audioCapable: readonly string[] = AUDIO_INPUT_MODELS
+): NotePlan {
+  if (audioCapable.includes(reasoner)) {
+    return {
+      kind: "native-audio",
+      model: reasoner,
+      why: "It can listen to the recording directly, so tone and emphasis are not lost to a transcript.",
+    };
+  }
+
+  return {
+    kind: "transcribe-then-answer",
+    transcriber,
+    reasoner,
+    why: `${reasoner} cannot listen to audio, so the note is transcribed first.`,
+  };
+}
 
 export type VoiceConfigProblem =
   | { readonly kind: "not-realtime-capable"; readonly model: string }
