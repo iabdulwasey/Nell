@@ -11,6 +11,8 @@
  * typed into it.
  */
 
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { AccessScope } from "@nell/shared";
 import {
   chromium,
@@ -59,8 +61,23 @@ export interface LocalBrowserOptions {
    * this is deliberately larger than the resolution screenshots are sent at.
    */
   readonly viewport?: DisplaySize;
-  /** Where persistent per-merchant profiles are stored. */
+  /** Where a portable snapshot of cookies is written, when one is asked for. */
   readonly profileDir?: string;
+  /**
+   * Where each workspace's browser profile lives on disk.
+   *
+   * Set it and the browser survives a restart: cookies, storage, and the
+   * profile a site has come to recognise. Leave it unset and every run starts
+   * as a stranger, which is right for tests and wrong for a real user — the
+   * whole reason a persistent machine is the architecture is that logins
+   * accumulate, and a login that does not outlive the process accumulates
+   * nothing.
+   *
+   * One directory per workspace, because Chromium locks a profile to a single
+   * running instance and because two users sharing cookies would be the worst
+   * bug in the system.
+   */
+  readonly profileRoot?: string;
   /**
    * Resolves an opaque file reference to a path inside the session's upload
    * directory. Workers name references, never filesystem paths — otherwise
@@ -79,6 +96,8 @@ const MACHINE_VIEWPORT_DEFAULT: DisplaySize = { width: 1440, height: 900 };
 export class LocalBrowserProvider implements BrowserProvider {
   #browser: Browser | undefined;
   readonly #sessions = new Map<string, LiveSession>();
+  /** One persistent browser per workspace, keyed so a relaunch can close the last. */
+  readonly #profiles = new Map<string, BrowserContext>();
   readonly #options: LocalBrowserOptions;
   readonly #files: FileResolver | undefined;
   #counter = 0;
@@ -107,6 +126,42 @@ export class LocalBrowserProvider implements BrowserProvider {
         height: Math.round(viewport.height * factor),
       },
     };
+  }
+
+  async #createPersistent(
+    scope: AccessScope,
+    root: string,
+    options: CreateSessionOptions
+  ): Promise<BrowserSession> {
+    const context = await this.#persistentContext(scope.workspaceId, root);
+    context.setDefaultTimeout(12_000);
+    context.setDefaultNavigationTimeout(30_000);
+
+    // A persistent context opens with a page already; reusing it avoids a blank
+    // second tab sitting behind everything for the life of the profile.
+    const page = context.pages()[0] ?? (await context.newPage());
+    await page.addInitScript(
+      `Object.defineProperty(navigator, 'webdriver', { get: () => undefined })`
+    );
+
+    if (options.startUrl) {
+      await page.goto(options.startUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+    }
+
+    this.#counter += 1;
+    const session: BrowserSession = {
+      id: `local-${String(this.#counter)}`,
+      workspaceId: scope.workspaceId,
+      profileId: options.profileId,
+    };
+    this.#sessions.set(session.id, {
+      session,
+      context,
+      page,
+      cursor: { x: 0, y: 0 },
+      snapshotVersion: 0,
+    });
+    return session;
   }
 
   async #ensureBrowser(): Promise<Browser> {
@@ -152,10 +207,51 @@ export class LocalBrowserProvider implements BrowserProvider {
     return live;
   }
 
+  /**
+   * A workspace's own browser, kept on disk.
+   *
+   * `launchPersistentContext` rather than a context inside a shared browser:
+   * that is what makes the profile a real one — the same cookies, the same
+   * storage, the same accumulated history the next time the process starts.
+   * A `storageState` snapshot would carry the cookies and none of the rest, and
+   * the rest is what a site is looking at when it decides whether this is a
+   * browser it has seen before.
+   *
+   * Any context already open for this workspace is closed first. Chromium locks
+   * a profile directory to one running instance, so a second launch against the
+   * same directory fails — and the case that reaches here is a session the pool
+   * found dead, which is exactly when a stale lock would still be held.
+   */
+  async #persistentContext(workspaceId: string, root: string): Promise<BrowserContext> {
+    const existing = this.#profiles.get(workspaceId);
+    if (existing) {
+      await existing.close().catch(() => undefined);
+      this.#profiles.delete(workspaceId);
+    }
+
+    const space = this.coordinateSpace();
+    const dir = join(root, workspaceId.replaceAll(/[^\w.-]/gu, "_"));
+    mkdirSync(dir, { recursive: true });
+
+    const context = await chromium.launchPersistentContext(dir, {
+      headless: this.#options.headless ?? true,
+      args: ["--disable-blink-features=AutomationControlled"],
+      viewport: { width: space.viewport.width, height: space.viewport.height },
+      deviceScaleFactor: space.display.width / space.viewport.width,
+      locale: "en-US",
+    });
+
+    this.#profiles.set(workspaceId, context);
+    return context;
+  }
+
   async createSession(
     scope: AccessScope,
     options: CreateSessionOptions = {}
   ): Promise<BrowserSession> {
+    const root = this.#options.profileRoot;
+    if (root) return this.#createPersistent(scope, root, options);
+
     const browser = await this.#ensureBrowser();
     const space = this.coordinateSpace();
     const context = await browser.newContext({
@@ -427,11 +523,25 @@ export class LocalBrowserProvider implements BrowserProvider {
     }
   }
 
+  /**
+   * A portable snapshot of cookies and storage.
+   *
+   * **Not how the profile persists**, and worth saying because it looks like it
+   * is: this writes a file that nothing in the system reads back, and did so
+   * long before `profileRoot` existed — a save with no load, which is a feature
+   * that cannot work. Persistence comes from the profile directory, which
+   * Chromium maintains itself.
+   *
+   * Kept because a portable snapshot is genuinely useful for the thing it is
+   * named after: moving a logged-in session to another machine, or handing one
+   * to a cloud browser that cannot mount a local directory.
+   */
   async saveProfile(scope: AccessScope, sessionId: string, profileId: string): Promise<void> {
     const { context } = this.#require(scope, sessionId);
     const dir = this.#options.profileDir;
     if (!dir) return;
-    await context.storageState({ path: `${dir}/${profileId}.json` });
+    mkdirSync(dir, { recursive: true });
+    await context.storageState({ path: join(dir, `${profileId}.json`) });
   }
 
   replayUrl(_scope: AccessScope, _sessionId: string): Promise<string | undefined> {
@@ -443,13 +553,26 @@ export class LocalBrowserProvider implements BrowserProvider {
     const live = this.#require(scope, sessionId);
     await live.context.close();
     this.#sessions.delete(sessionId);
+    // A persistent context is the browser, so closing it releases the profile
+    // lock — and leaving a stale entry here would make the next launch close
+    // something already gone.
+    if (this.#profiles.get(scope.workspaceId) === live.context) {
+      this.#profiles.delete(scope.workspaceId);
+    }
   }
 
-  /** Shut the shared browser down. Call once at process exit. */
+  /** Shut everything down. Call once at process exit. */
   async shutdown(): Promise<void> {
     for (const [id, live] of this.#sessions) {
       await live.context.close().catch(() => undefined);
       this.#sessions.delete(id);
+    }
+    // Persistent contexts are browsers in their own right and are not closed by
+    // closing the shared one — left open, they keep a lock on the profile that
+    // the next run needs.
+    for (const [workspaceId, context] of this.#profiles) {
+      await context.close().catch(() => undefined);
+      this.#profiles.delete(workspaceId);
     }
     await this.#browser?.close();
     this.#browser = undefined;

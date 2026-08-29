@@ -165,7 +165,7 @@ side of that line each piece falls on.
 | **Credentials on a page** | Taint machine blocks field reads, clipboard, uploads and downloads; captures are masked before the PNG is encoded     |
 | **Audit**                 | Append-only hash chain, verified on every render rather than behind a button                                          |
 | **Deletion**              | Derived data is rebuildable, so deleting a source provably removes every copy — with a receipt                        |
-| **The computer**          | One persistent machine per user: logins survive, so the vault is rarely touched at all                                |
+| **The computer**          | One machine per user, profile kept on disk — logins survive a restart, so the vault is rarely touched at all          |
 | **Computer use**          | Full pointer/keyboard surface mirroring the Anthropic and OpenAI tool schemas, plus an accessibility-tree fast path   |
 | **Handoff**               | A short-lived, single-use link that hands you the controls for a CAPTCHA or 3DS — and stops the agent while you drive |
 | **Memory**                | Preferences, task ledger, directives, reviewed playbooks, and a derived recall index                                  |

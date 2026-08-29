@@ -6,6 +6,8 @@
  * is harder to diagnose than one that will not boot.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { BrowserExecutor } from "@nell/aegis";
 import { keysFromEnv, providerFor } from "@nell/agent";
 import { LocalBrowserProvider } from "@nell/browser/adapters";
@@ -44,7 +46,23 @@ if (missing.length > 0) {
 const pool = createPool(databaseUrl!);
 await assertRlsEnforceable(pool);
 
-const browser = new LocalBrowserProvider({ headless: process.env["NELL_HEADED"] !== "1" });
+/**
+ * Where the browser lives between runs.
+ *
+ * Set by default rather than opt-in, because the machine being *old* is the
+ * point: cookies, storage and the profile a site has come to recognise all
+ * accumulate, and a site that has seen this browser before asks fewer
+ * questions. A profile that does not outlive the process accumulates nothing,
+ * and this process restarts often.
+ *
+ * Under the user's home rather than a temp directory, for the same reason.
+ */
+const profileRoot = process.env["NELL_PROFILE_ROOT"] ?? join(homedir(), ".nell", "profiles");
+
+const browser = new LocalBrowserProvider({
+  headless: process.env["NELL_HEADED"] !== "1",
+  profileRoot,
+});
 const sessions = new WorkspaceSessions({ provider: browser, startUrl });
 
 /**
@@ -76,6 +94,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 console.log(`model: ${modelId}`);
+console.log(`profiles: ${profileRoot}`);
 console.log(`owner: telegram ${owner!}`);
 
 /**
