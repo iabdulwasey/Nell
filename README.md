@@ -78,31 +78,52 @@ More detail and a full FAQ:
 
 ## Status
 
-**Under active development — the trust core is built, the agent is not yet.**
-Not usable as a personal assistant today.
+**The substrate is built and tested; it is not yet a running assistant.** Every
+boundary below is enforced in code and covered by tests, but nothing is wired to
+a live model, a cloud browser, or a real phone number yet — so it is not
+something you can text today.
 
-What exists and is tested (150 tests, all packages typechecking):
+**812 tests · 41 adversarial attacks run on every commit · CI green.**
 
-| Component                                                                 | State   |
-| ------------------------------------------------------------------------- | ------- |
-| Encrypted vault (AES-256-GCM, per-item binding, key rotation)             | ✅      |
-| Policy engine — spend approvals, origin allowlist, taint, provenance gate | ✅      |
-| Append-only hash-chained audit log                                        | ✅      |
-| Durable execution — crash-resume verified on real Postgres                | ✅      |
-| Tenant isolation — row-level security verified on PostgreSQL 17           | ✅      |
-| Typed browser action DSL (no code-execution escape hatch)                 | ✅      |
-| Model router with cost metering and circuit breaker                       | ✅      |
-| Anti-cheat eval harness with adversarial refusal scenarios                | ✅      |
-| Local Chromium browser adapter (tested against a real browser)            | ✅      |
-| Phone auth — OTP, recovery codes, send rate limiting                      | ✅      |
-| `docker compose up` — Postgres + core service with health endpoints       | ✅      |
-| Agent runtime, channels, dashboard, memory, cloud browser                 | 🚧 next |
+### Built and tested
 
-The security foundation is deliberately built first: every boundary that
-protects your money and credentials is enforced in code and covered by tests
-before any capability is layered on top. See [`docs/roadmap.md`](docs/roadmap.md)
-for what lands when, and [`docs/security-model.md`](docs/security-model.md) for
-how the boundaries work.
+| Area                      | What exists                                                                                                           |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **Vault**                 | AES-256-GCM, per-item AAD binding, key rotation, `Secret<T>` that redacts itself, CVC never stored                    |
+| **Policy chokepoint**     | One executor both perception modes pass through — a pixel click meets the same gates as a targeted one                |
+| **Spend**                 | Approvals bound to a payload hash: single-use, short-TTL, invalidated by any change to items, options or total        |
+| **Virtual cards**         | Single-use card per purchase, capped at the approved total — a limit the card network enforces, not our code          |
+| **Untrusted content**     | Provenance gate + quarantined readers; a turn whose only new context is email or web text cannot act                  |
+| **2FA**                   | Vaulted TOTP (verified against RFC 6238 vectors) and per-use scoped code reads that return digits and nothing else    |
+| **Credentials on a page** | Taint machine blocks field reads, clipboard, uploads and downloads; captures are masked before the PNG is encoded     |
+| **Audit**                 | Append-only hash chain, verified on every render rather than behind a button                                          |
+| **Deletion**              | Derived data is rebuildable, so deleting a source provably removes every copy — with a receipt                        |
+| **The computer**          | One persistent machine per user: logins survive, so the vault is rarely touched at all                                |
+| **Computer use**          | Full pointer/keyboard surface mirroring the Anthropic and OpenAI tool schemas, plus an accessibility-tree fast path   |
+| **Handoff**               | A short-lived, single-use link that hands you the controls for a CAPTCHA or 3DS — and stops the agent while you drive |
+| **Memory**                | Preferences, task ledger, directives, reviewed playbooks, and a derived recall index                                  |
+| **Channels**              | Telegram (per-task forum topics), WhatsApp (24-hour service window), iMessage (STOP/START/HELP, per-task groups)      |
+| **Models**                | Bring your own: Anthropic, OpenAI, Google, xAI, DeepSeek, GLM, Kimi, Mistral, OpenRouter, or your own hardware        |
+| **Dashboard**             | Tasks, approvals, machine, vault, memory, audit, model settings                                                       |
+| **Durability**            | DBOS crash-resume verified against real Postgres; RLS tenant isolation verified on PostgreSQL 17                      |
+
+### Not built yet
+
+Voice calls · Calendar, Slack, Notion, Linear, GitHub and MCP connectors · email
+write operations · cloud-browser vendor adapter · the desktop companion · hosted
+billing.
+
+The security foundation is deliberately built first: every boundary that protects
+your money and your credentials is enforced in code and covered by tests before
+any capability is layered on top.
+
+The adversarial suite is worth a look if you are evaluating the trust story —
+[`packages/evals/src/attacks.ts`](packages/evals/src/attacks.ts) runs 41 real
+attacks against the real gates on every commit, and each one records the incident
+or hazard it guards against. Run it with `pnpm attacks`.
+
+See [`docs/security-model.md`](docs/security-model.md) for how the boundaries
+work and [`docs/roadmap.md`](docs/roadmap.md) for what lands when.
 
 Contributions welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
