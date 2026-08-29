@@ -16,6 +16,11 @@ enforced by the code and verifiable because the trust core is source-available.
 
 - **Vault secrets** — encrypted (AES-256-GCM), only ever decrypted server-side at
   the moment of use.
+- **The conversation** — what you said and what Nell replied, so a follow-up like
+  "book the second one" means something. Each turn records where it came from:
+  your words can authorise work, Nell's own replies cannot, because a reply
+  quotes web pages and a page that gets quoted must not come back as an
+  instruction. Readable with `/memory`, erasable on its own.
 - **Preferences and task history** — so "book it like last time" works. Visible
   to you and deletable.
 - **Derived indexes** (for search over connected-account data) — rebuildable,

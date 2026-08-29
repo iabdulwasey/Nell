@@ -2,17 +2,23 @@
 
 Phases from scaffold to full platform. Dates are relative; scope is the point.
 
-## Step 1 — Scaffold (this commit)
+> **The distinction this document tries to keep honest** is not built versus
+> unbuilt. It is **reachable from a chat message** versus **built, tested and
+> unreachable**. Both halves are real code with real tests, and only one can
+> affect you — and blurring them is how a roadmap ends up claiming a phase is
+> complete because its decision layer is.
 
-Git-ready monorepo: package skeleton, licenses, tooling, CI, docs. No trust-core
-logic yet. The `DurableEngine` port and the license-key seam exist so later work
-drops into the right shape.
+## Step 1 — Scaffold
+
+Git-ready monorepo: package skeleton, licenses, tooling, CI, docs. The
+`DurableEngine` port and the license-key seam exist so later work drops into the
+right shape.
 
 ## Phase 0 — Trust core
 
 The security foundation, built before any user-facing capability.
 
-**Done** (119 tests; all packages typecheck; zero lint errors):
+**Done:**
 
 - ✅ **DBOS crash-resume spike** — passed on real PostgreSQL. A workflow
   SIGKILLed mid-step resumed from its checkpoint with the side-effecting step
@@ -46,12 +52,16 @@ The security foundation, built before any user-facing capability.
   per-destination/per-origin send rate limits. Delivery is a port, so the flow
   is fully tested without a provider account.
 
+- ✅ **A real messaging provider** — Telegram, long-polling so it needs no public
+  URL. Browser profiles persist to disk, which the "persistent profiles" line
+  above always called for and which was half-built: `saveProfile` wrote a file
+  nothing ever read back.
+
 **Remaining:**
 
 - A cloud browser adapter (persistent profiles, live view, session replay).
   The `BrowserProvider` port is stable; this is adapter work behind a vendor
-  account.
-- Binding a real messaging provider to the delivery port.
+  account. **The only Phase 0 item still open.**
 
 ## v1 — The magic demo
 
@@ -65,6 +75,31 @@ choice.
 Demo beats: book with exact-payload approval → kill the server mid-task, it
 finishes → "same as last time" from memory → a monitor pings only on a real
 change → an attacker email is refused with a visible audit entry.
+
+**Where those five actually stand:**
+
+| Beat                                          | State                                                                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Book with exact-payload approval              | ✅ Watched end to end, twice                                                                                       |
+| **Kill the server mid-task, it finishes**     | ⬜ **The one that does not hold.** DBOS passed its crash-resume spike in Phase 0 and nothing at runtime imports it |
+| "Same as last time" from memory               | ◐ Preferences, standing rules and a task ledger all persist and are read; the recall index is not wired            |
+| A monitor pings only on a real change         | ✅ Leased, deduped, quiet when nothing changed                                                                     |
+| An attacker email refused with an audit entry | ✅ The refusal was always enforced; the chain is now written to as well                                            |
+
+**Also done in v1, and worth naming because none of it was on the list above** —
+it only becomes visible once somebody is actually texting the thing: answering
+rather than describing what it did · not opening a browser for "Ok" · knowing
+what today's date is, enforced at the transport so no caller can forget ·
+bounding a task by progress rather than a step count · steering a task
+mid-flight · remembering the conversation, up to whatever the model can hold ·
+a task that spans the conversation it takes rather than one per message · the
+vault reachable, so it can sign in · the audit log actually written to.
+
+**Still open in v1:** the coordinator/worker split (this is one loop over one
+task) · coordinator compaction · the dashboard is built and not running ·
+per-task forum topics · Gmail (the quarantined reader is built; there is no
+OAuth custody) · the live-view handoff · the BYOK settings UI · per-package
+builds, so this runs from TypeScript source rather than a compiled artefact.
 
 ## v2 — Parity-plus
 

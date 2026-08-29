@@ -141,7 +141,8 @@ More detail and a full FAQ:
 **It runs.** You can text it, and it does the thing — the video above is a real
 task on a real browser, driven by a real model, with the results in a real
 Postgres. Self-hosting it needs a Telegram bot token, a model key and a
-Postgres, and nothing else.
+Postgres, and nothing else. It remembers the conversation, signs in to sites
+with credentials you have saved, and writes down what it did.
 
 What that sentence does not cover, and it is a lot: this is one agent working
 one task at a time on one machine. There is no hosted service, no coordinator
@@ -149,50 +150,66 @@ splitting work across tasks, no cloud browser, and every vendor beyond the
 model and search is still an unbound port. The list below is honest about which
 side of that line each piece falls on.
 
-**1,156 tests · 57 adversarial attacks run on every commit · CI green.**
+**1,318 tests · 51 adversarial attacks run on every commit · CI green.**
 
 ### Built and tested
 
-| Area                      | What exists                                                                                                           |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| **Vault**                 | AES-256-GCM, per-item AAD binding, key rotation, `Secret<T>` that redacts itself, CVC never stored                    |
-| **Policy chokepoint**     | One executor both perception modes pass through — a pixel click meets the same gates as a targeted one                |
-| **Spend**                 | A click that commits money is refused at the chokepoint until you say yes — pixel clicks included                     |
-| **Approvals**             | Bound to what you were shown: single-use, and consent for £18.50 is not consent for £95.00                            |
-| **Virtual cards**         | Single-use card per purchase, capped at the approved total — a limit the card network enforces, not our code          |
-| **Untrusted content**     | Provenance gate + quarantined readers; a turn whose only new context is email or web text cannot act                  |
-| **2FA**                   | Vaulted TOTP (verified against RFC 6238 vectors) and per-use scoped code reads that return digits and nothing else    |
-| **Credentials on a page** | Taint machine blocks field reads, clipboard, uploads and downloads; captures are masked before the PNG is encoded     |
-| **Audit**                 | Append-only hash chain, verified on every render rather than behind a button                                          |
-| **Deletion**              | Derived data is rebuildable, so deleting a source provably removes every copy — with a receipt                        |
-| **The computer**          | One machine per user, profile kept on disk — logins survive a restart, so the vault is rarely touched at all          |
-| **Computer use**          | Full pointer/keyboard surface mirroring the Anthropic and OpenAI tool schemas, plus an accessibility-tree fast path   |
-| **Handoff**               | A short-lived, single-use link that hands you the controls for a CAPTCHA or 3DS — and stops the agent while you drive |
-| **Memory**                | Preferences, task ledger, directives, reviewed playbooks, and a derived recall index                                  |
-| **Channels**              | Telegram (per-task forum topics), WhatsApp (24-hour service window), iMessage (STOP/START/HELP, per-task groups)      |
-| **Models**                | Bring your own: Anthropic, OpenAI, Google, xAI, DeepSeek, GLM, Kimi, Mistral, OpenRouter, or your own hardware        |
-| **Dashboard**             | Tasks, approvals, machine, vault, memory, audit, model settings                                                       |
-| **Durability**            | DBOS crash-resume verified against real Postgres; RLS tenant isolation verified on PostgreSQL 17                      |
-| **Two senses**            | Accessibility tree for speed; when it stops learning anything the agent switches to looking at the screen             |
-| **Search**                | Bound to a live vendor — search engines captcha a headless browser, so searching is not something to do in one        |
-| **Knowing you**           | Asks once where you are, then never again; share a pin on Telegram and it takes that                                  |
-| **Recurring work**        | "Every morning at 6, scan the AI news" — leased, deduped, and it stays quiet when nothing changed                     |
-| **Bounds**                | A task runs while it is getting somewhere and stops when it is not; going round in circles counts as standing still   |
+| Area                      | What exists                                                                                                                              |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **Vault**                 | Logins, addresses, cards and phones. AES-256-GCM, per-item AAD binding, key rotation, CVC never stored                                   |
+| **Adding a password**     | A one-time link to a page served on loopback — the secret never passes through the chat, or any third party at all                       |
+| **Signing in**            | A login is bound to the site it was saved for, taken from the live URL — so a page that merely looks right gets nothing                  |
+| **Policy chokepoint**     | One executor both perception modes pass through — a pixel click meets the same gates as a targeted one                                   |
+| **Spend**                 | A click that commits money is refused at the chokepoint until you say yes — pixel clicks included                                        |
+| **Approvals**             | Bound to what you were shown: single-use, and consent for £18.50 is not consent for £95.00                                               |
+| **Virtual cards**         | Single-use card per purchase, capped at the approved total — a limit the card network enforces, not our code                             |
+| **Untrusted content**     | Provenance gate + quarantined readers; a turn whose only new context is email or web text cannot act                                     |
+| **2FA**                   | Vaulted TOTP (verified against RFC 6238 vectors) and per-use scoped code reads that return digits and nothing else                       |
+| **Credentials on a page** | Taint machine blocks field reads, clipboard, uploads and downloads; captures are masked before the PNG is encoded                        |
+| **Audit**                 | Append-only hash chain, verified on every render rather than behind a button                                                             |
+| **Deletion**              | Derived data is rebuildable, so deleting a source provably removes every copy — with a receipt                                           |
+| **The computer**          | One machine per user, profile kept on disk — logins survive a restart, so the vault is rarely touched at all                             |
+| **Computer use**          | Full pointer/keyboard surface mirroring the Anthropic and OpenAI tool schemas, plus an accessibility-tree fast path                      |
+| **Handoff**               | A short-lived, single-use link that hands you the controls for a CAPTCHA or 3DS — and stops the agent while you drive                    |
+| **Memory**                | The conversation, preferences, standing rules, a task ledger and free-form notes — read and edited as `USER.md`, `MEMORY.md`, `TASKS.md` |
+| **Remembering a chat**    | Everything the model can hold — 152k tokens on a 200k model — folded into a summary you can read only when it cannot                     |
+| **Channels**              | Telegram, WhatsApp (24-hour service window), iMessage (STOP/START/HELP, per-task groups)                                                 |
+| **Models**                | Bring your own: Anthropic, OpenAI, Google, xAI, DeepSeek, GLM, Kimi, Mistral, OpenRouter, or your own hardware                           |
+| **Dashboard**             | Tasks, approvals, machine, vault, memory, audit, model settings                                                                          |
+| **Tenant isolation**      | Row-level security forced on every table with a `workspace_id` — the migration asks the database, so a new table cannot be missed        |
+| **Two senses**            | Accessibility tree for speed; when it stops learning anything the agent switches to looking at the screen                                |
+| **Search**                | Bound to a live vendor — search engines captcha a headless browser, so searching is not something to do in one                           |
+| **Knowing you**           | Asks once where you are, then never again; share a pin on Telegram and it takes that                                                     |
+| **Recurring work**        | "Every morning at 6, scan the AI news" — leased, deduped, and it stays quiet when nothing changed                                        |
+| **Bounds**                | A task runs while it is getting somewhere and stops when it is not; going round in circles counts as standing still                      |
+| **A task**                | Spans the conversation it takes — answer the question it asked and it carries on rather than starting something new                      |
 
-Some of the above is tested but not yet reachable from a chat message — the
-vault, virtual cards, TOTP, the audit chain, the handoff link and the dashboard
-all work and are covered, and nothing in the running agent calls them yet. They
-are listed here because the boundaries are real, not because you can use them
-today.
+Some of the above is tested but **not yet reachable from a chat message**:
+virtual cards, the handoff link, the desktop companion, the dashboard, and the
+durable runtime. They are listed because the boundaries are real and covered,
+not because you can use them today.
 
-The spend gate was in that list until recently, and it is worth saying what
-changed. The approval machinery had been built and tested since Phase 0 and
-nothing in the agent ever called it: what actually stopped a live booking at the
-payment page was the model saying it should stop. That is obedience, and this
-project's whole claim is that it does not rely on obedience. A click that
-commits money now meets the gate before it reaches the page — through either
-sense, since a gate covering only one is a gate the agent walks around by
-changing how it sees.
+That distinction — built and tested versus reachable — is the one worth keeping
+an eye on here, because three things left the second list recently and each left
+for the same reason.
+
+The **spend gate** had been built since Phase 0 and _nothing in the agent ever
+called it_. What actually stopped a live booking at the payment page was the
+model saying it should stop. That is obedience, and this project's whole claim is
+that it does not rely on obedience.
+
+The **vault** was three test files of correct cryptography that had never stored
+a secret: the executor's secret port had no implementation, and the model was
+never told an item existed, so the fill action could only name an id nobody
+could produce.
+
+The **audit log** had a verified hash chain and an append-only table, and the
+executor called `record(...)` at every consequential step — into `undefined`,
+because nothing had ever passed it a sink.
+
+All three now run. The pattern is worth naming rather than hiding: a
+well-tested half with no edge to the other half looks exactly like a finished
+feature, right up until someone uses it.
 
 ### Not built yet
 
@@ -200,12 +217,18 @@ Voice calls · Calendar, Slack, Notion, Linear, GitHub and MCP connectors · ema
 write operations · cloud-browser vendor adapter · the desktop companion · hosted
 billing · a coordinator that runs more than one task at a time.
 
+**Durable execution** belongs on this list rather than the one above, and it is
+the largest gap. DBOS passed a crash-resume spike against real Postgres in Phase
+0 — killed mid-workflow, resumed from its checkpoint, side-effecting step ran
+exactly once — and nothing at runtime has imported it since. So today, killing
+the process mid-task loses the task.
+
 The security foundation is deliberately built first: every boundary that protects
 your money and your credentials is enforced in code and covered by tests before
 any capability is layered on top.
 
 The adversarial suite is worth a look if you are evaluating the trust story —
-[`packages/evals/src/attacks.ts`](packages/evals/src/attacks.ts) runs 57 real
+[`packages/evals/src/attacks.ts`](packages/evals/src/attacks.ts) runs 51 real
 attacks against the real gates on every commit, and each one records the incident
 or hazard it guards against. Run it with `pnpm attacks`.
 

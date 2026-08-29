@@ -15,34 +15,41 @@ prompt. An attack becomes a runtime error, not a persuasion contest.
    selectors. The server decrypts and injects the value directly into the browser
    field. The value never enters the model's context.
 
-3. **Server-side origin allowlist.** Each vault item is pinned to origins the
+3. **A password never passes through the chat.** Adding one gives you a one-time
+   link to a page served on loopback — bound to `127.0.0.1`, single-use, ten
+   minutes, and refused outright if the `Host` header is not local, which is what
+   ends DNS rebinding. The bytes go from your keyboard to a socket on your own
+   machine. Asking in the chat and deleting the message afterwards would send the
+   password to a third party first and then trust a deletion call to undo it.
+
+4. **Server-side origin allowlist.** Each vault item is pinned to origins the
    user confirmed. At fill time the server checks the browser's _actual_ origin
    (queried over CDP) against the allowlist — the model does not get to name the
    origin.
 
-4. **Typed browser DSL.** Workers act through a typed action vocabulary
+5. **Typed browser DSL.** Workers act through a typed action vocabulary
    (goto/click/type/select/…), not model-authored code. Arbitrary code on a
    secret-bearing session is an unbounded exfiltration channel, so it does not
    exist. After an autofill the session is tainted: value-returning calls are
    blocked or scrubbed, clipboard/downloads blocked, screenshots masked.
 
-5. **Spend gate.** An approval is a hash of (merchant, items, quantity, options,
+6. **Spend gate.** An approval is a hash of (merchant, items, quantity, options,
    total). The user's confirmation mints a single-use, short-TTL token bound to
    that hash. The purchase call must present a matching token; a changed total
    silently invalidates it. Per-workspace budgets and caps are enforced in the
    same transaction.
 
-6. **Provenance gate.** Third-party content (email bodies, page text, messages
+7. **Provenance gate.** Third-party content (email bodies, page text, messages
    from strangers) is flagged untrusted. A turn whose new context is
    untrusted-only cannot invoke consequential tools without fresh user
    confirmation. Integrations feed the planner only through quarantined readers
    that emit schema-validated data, never raw prose alongside tool access.
 
-7. **Audit.** Every decrypt, fill, approval, purchase, outbound message, and
+8. **Audit.** Every decrypt, fill, approval, purchase, outbound message, and
    memory deletion is written to an append-only, hash-chained log, visible to the
    user.
 
-8. **Tenant isolation, twice.** Application code filters every query by the
+9. **Tenant isolation, twice.** Application code filters every query by the
    caller's workspace; PostgreSQL row-level security is the backstop for the
    query that forgets. The request's workspace is published per transaction with
    `SET LOCAL app.workspace_id`, so it cannot leak across a pooled connection.
@@ -53,6 +60,15 @@ prompt. An attack becomes a runtime error, not a persuasion contest.
    workspace while a correctly-configured role returned only its own and had a
    cross-tenant insert rejected. The app refuses to boot if its role can bypass
    RLS.
+
+   **Which tables count is asked of the database, not listed anywhere.** Any
+   table with a `workspace_id` column belongs to a tenant and must have RLS
+   forced; the migration checks exactly that and exits non-zero otherwise. It
+   used to compare against a hand-maintained list, which had silently fallen two
+   tables behind the schema — so the check that proves row-level security is live
+   would have reported success while a new table sat with no policy on it. A
+   security gate that fails open through drift is worse than no gate, because it
+   gets quoted as though it means something.
 
 ## What this buys
 
