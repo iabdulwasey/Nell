@@ -52,6 +52,17 @@ const PAGE = `<!doctype html>
 
 const NEXT = `<!doctype html><html><body><h1>Second Page</h1></body></html>`;
 
+/** A page whose buttons move, so a ref can genuinely go stale. */
+const SHIFTING = `<!doctype html>
+<html><body>
+  <div id="list">
+    <button onclick="document.getElementById('hit').textContent=this.textContent">Alpha</button>
+    <button onclick="document.getElementById('hit').textContent=this.textContent">Beta</button>
+  </div>
+  <div id="hit">none</div>
+  <button id="reorder" onclick="var l=document.getElementById('list'); l.insertBefore(l.children[1], l.children[0]);">Reorder</button>
+</body></html>`;
+
 /**
  * A page built for pixel-driving: every target sits at an exact, known position
  * so a click can be aimed at a coordinate and verified to have landed there.
@@ -122,6 +133,7 @@ beforeAll(async () => {
     res.writeHead(200, { "content-type": "text/html" });
     if (req.url === "/next") return void res.end(NEXT);
     if (req.url === "/computer") return void res.end(COMPUTER_PAGE);
+    if (req.url === "/shifting") return void res.end(SHIFTING);
     res.end(PAGE);
   });
   await new Promise<void>((resolve) => {
@@ -594,5 +606,111 @@ describeBrowser("secret masking", () => {
     });
     expect(result.screenshot).toBeTruthy();
     await provider.destroy(scope, session.id);
+  }, 60_000);
+});
+
+/**
+ * Refs, and the claim they exist to make.
+ *
+ * The argument for driving a page structurally rather than by coordinates is
+ * entirely about failure: a stale coordinate silently clicks whatever moved into
+ * that spot, while a stale ref raises. Until now perception handed out refs that
+ * no action could target — two well-tested halves that had never met — so the
+ * claim was untested in both directions.
+ */
+describeBrowser("snapshot refs", () => {
+  it("reads a real page into nodes a model can be shown", async () => {
+    const id = (await provider.createSession(scope, { startUrl: origin })).id;
+    const snapshot = await provider.snapshot(scope, id);
+
+    expect(snapshot.url).toContain(origin);
+    expect(snapshot.title).toBe("");
+    const roles = snapshot.nodes.map((node) => node.role);
+    expect(roles).toContain("button");
+    expect(roles).toContain("textbox");
+
+    const go = snapshot.nodes.find((node) => node.name === "Continue");
+    expect(go?.ref).toMatch(/^\d+:e\d+$/u);
+
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("acts on an element named by its ref", async () => {
+    const id = (await provider.createSession(scope, { startUrl: `${origin}/shifting` })).id;
+    const snapshot = await provider.snapshot(scope, id);
+
+    const alpha = snapshot.nodes.find((node) => node.name === "Alpha");
+    expect(alpha).toBeDefined();
+
+    await provider.perform(scope, id, [
+      { action: "click", target: { by: "ref", ref: alpha!.ref } },
+    ]);
+
+    const result = await provider.perform(scope, id, [
+      { action: "extract", target: { by: "css", selector: "#hit" }, fields: ["text"] },
+    ]);
+    expect(result.extracted?.["text"]).toBe("Alpha");
+
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  /**
+   * The whole point. Take a look, let the page rearrange, then try to act on
+   * what was seen before — a coordinate would click the element that moved into
+   * the old position, and be confidently wrong.
+   */
+  it("refuses a ref from an earlier look rather than clicking the wrong thing", async () => {
+    const id = (await provider.createSession(scope, { startUrl: `${origin}/shifting` })).id;
+
+    const first = await provider.snapshot(scope, id);
+    const alpha = first.nodes.find((node) => node.name === "Alpha")!;
+
+    // The page changes, and we look again — which invalidates the old refs.
+    await provider.perform(scope, id, [
+      { action: "click", target: { by: "css", selector: "#reorder" } },
+    ]);
+    await provider.snapshot(scope, id);
+
+    await expect(
+      provider.perform(scope, id, [{ action: "click", target: { by: "ref", ref: alpha.ref } }])
+    ).rejects.toThrow(/earlier look/iu);
+
+    // And nothing was clicked in the meantime.
+    const result = await provider.perform(scope, id, [
+      { action: "extract", target: { by: "css", selector: "#hit" }, fields: ["text"] },
+    ]);
+    expect(result.extracted?.["text"]).toBe("none");
+
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("hands out fresh refs that work after the page changed", async () => {
+    const id = (await provider.createSession(scope, { startUrl: `${origin}/shifting` })).id;
+
+    await provider.snapshot(scope, id);
+    await provider.perform(scope, id, [
+      { action: "click", target: { by: "css", selector: "#reorder" } },
+    ]);
+
+    const second = await provider.snapshot(scope, id);
+    const beta = second.nodes.find((node) => node.name === "Beta")!;
+
+    await provider.perform(scope, id, [{ action: "click", target: { by: "ref", ref: beta.ref } }]);
+    const result = await provider.perform(scope, id, [
+      { action: "extract", target: { by: "css", selector: "#hit" }, fields: ["text"] },
+    ]);
+    expect(result.extracted?.["text"]).toBe("Beta");
+
+    await provider.destroy(scope, id);
+  }, 60_000);
+
+  it("leaves out what a person could not see or use", async () => {
+    const id = (await provider.createSession(scope, { startUrl: origin })).id;
+    const snapshot = await provider.snapshot(scope, id);
+
+    expect(snapshot.nodes.every((node) => node.role !== "generic")).toBe(true);
+    expect(snapshot.nodes.every((node) => node.role !== "none")).toBe(true);
+
+    await provider.destroy(scope, id);
   }, 60_000);
 });

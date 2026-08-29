@@ -8,6 +8,8 @@
 
 export { LocalBrowserProvider, type FileResolver, type LocalBrowserOptions } from "./local.js";
 
+export { isCurrentRef, refSelector, snapshotPage, REF_ATTRIBUTE } from "./snapshot.js";
+
 export { LocalMachineHost, type LocalMachineOptions } from "./local-machine.js";
 
 export {

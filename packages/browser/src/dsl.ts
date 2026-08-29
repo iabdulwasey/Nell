@@ -27,6 +27,16 @@ export const targetSchema = z.union([
   z.object({ by: z.literal("text"), text: z.string().min(1).max(300) }),
   z.object({ by: z.literal("testId"), id: z.string().min(1).max(200) }),
   /**
+   * A reference from the current snapshot, e.g. `3:e7`.
+   *
+   * The preferred way to name an element, and the reason structured driving is
+   * safer than coordinates: a ref from an earlier look matches nothing, so
+   * acting on a page that moved fails loudly instead of clicking whatever
+   * happens to be there now. Every other target here is a description that a
+   * changed page can silently satisfy with the wrong element.
+   */
+  z.object({ by: z.literal("ref"), ref: z.string().regex(/^\d+:e\d+$/u) }),
+  /**
    * CSS is the escape hatch. Bounded in length, and never a substitute for code
    * execution: it selects an element, it does not run anything.
    */

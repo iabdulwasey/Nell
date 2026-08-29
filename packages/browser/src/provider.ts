@@ -12,6 +12,7 @@
 
 import type { AccessScope } from "@nell/shared";
 import type { ComputerAction, CoordinateSpace } from "./computer.js";
+import type { PageSnapshot } from "./perception.js";
 
 /**
  * Capture options the provider honours. Declared here rather than imported from
@@ -83,6 +84,14 @@ export interface BrowserProvider {
    * click land short.
    */
   coordinateSpace(): CoordinateSpace;
+
+  /**
+   * Look at the page: the accessibility surface, with refs the DSL can target.
+   *
+   * Invalidates every ref from the previous snapshot, so a plan built from an
+   * older look fails loudly rather than half-applying to a page that moved.
+   */
+  snapshot(scope: AccessScope, sessionId: string, maxNodes?: number): Promise<PageSnapshot>;
 
   /**
    * The browser's ACTUAL current origin, read from the live session. The origin

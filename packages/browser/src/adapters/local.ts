@@ -19,6 +19,7 @@ import {
   type Locator,
   type Page,
 } from "playwright-core";
+import type { PageSnapshot } from "../perception.js";
 import {
   MODEL_DISPLAY,
   type ComputerAction,
@@ -27,6 +28,7 @@ import {
   type Point,
 } from "../computer.js";
 import { runComputerActions, screenshotOf, type CaptureOptions } from "./computer-exec.js";
+import { isCurrentRef, refSelector, snapshotPage } from "./snapshot.js";
 import type { BrowserAction, Target } from "../dsl.js";
 import type {
   ActionResult,
@@ -39,6 +41,8 @@ interface LiveSession {
   readonly session: BrowserSession;
   readonly context: BrowserContext;
   readonly page: Page;
+  /** Bumped on every snapshot; refs from earlier versions are stale. */
+  snapshotVersion: number;
   /**
    * Where the pointer is. Playwright exposes no getter, and a model that has
    * pressed the mouse down needs to know where it is dragging from.
@@ -144,7 +148,13 @@ export class LocalBrowserProvider implements BrowserProvider {
       workspaceId: scope.workspaceId,
       profileId: options.profileId,
     };
-    this.#sessions.set(session.id, { session, context, page, cursor: { x: 0, y: 0 } });
+    this.#sessions.set(session.id, {
+      session,
+      context,
+      page,
+      cursor: { x: 0, y: 0 },
+      snapshotVersion: 0,
+    });
     return session;
   }
 
@@ -154,7 +164,8 @@ export class LocalBrowserProvider implements BrowserProvider {
     actions: readonly BrowserAction[],
     options: CaptureOptions = {}
   ): Promise<ActionResult> {
-    const { page } = this.#require(scope, sessionId);
+    const live = this.#require(scope, sessionId);
+    const { page } = live;
     let extracted: Record<string, string> | undefined;
     let screenshot: string | undefined;
 
@@ -164,22 +175,22 @@ export class LocalBrowserProvider implements BrowserProvider {
           await page.goto(action.url, { waitUntil: action.waitUntil });
           break;
         case "click":
-          await locate(page, action.target).click();
+          await locate(page, action.target, live.snapshotVersion).click();
           break;
         case "type": {
-          const field = locate(page, action.target);
+          const field = locate(page, action.target, live.snapshotVersion);
           if (action.clearFirst) await field.fill("");
           await field.fill(action.text);
           break;
         }
         case "select":
-          await locate(page, action.target).selectOption(action.value);
+          await locate(page, action.target, live.snapshotVersion).selectOption(action.value);
           break;
         case "scroll":
           await page.mouse.wheel(0, action.direction === "down" ? action.amount : -action.amount);
           break;
         case "waitFor":
-          await locate(page, action.target).waitFor({
+          await locate(page, action.target, live.snapshotVersion).waitFor({
             state: action.state,
             timeout: action.timeoutMs,
           });
@@ -188,7 +199,9 @@ export class LocalBrowserProvider implements BrowserProvider {
           await page.goBack({ waitUntil: "domcontentloaded" });
           break;
         case "extract": {
-          const scopeLocator = action.target ? locate(page, action.target) : undefined;
+          const scopeLocator = action.target
+            ? locate(page, action.target, live.snapshotVersion)
+            : undefined;
           const text = scopeLocator
             ? ((await scopeLocator.textContent()) ?? "")
             : ((await page.textContent("body")) ?? "");
@@ -207,14 +220,16 @@ export class LocalBrowserProvider implements BrowserProvider {
           if (!path) {
             throw new Error("No file broker configured, or unknown file reference.");
           }
-          await locate(page, action.target).setInputFiles(path);
+          await locate(page, action.target, live.snapshotVersion).setInputFiles(path);
           break;
         }
         case "hover":
-          await locate(page, action.target).hover();
+          await locate(page, action.target, live.snapshotVersion).hover();
           break;
         case "drag":
-          await locate(page, action.from).dragTo(locate(page, action.to));
+          await locate(page, action.from, live.snapshotVersion).dragTo(
+            locate(page, action.to, live.snapshotVersion)
+          );
           break;
         case "press":
           await page.keyboard.press(action.key);
@@ -269,6 +284,19 @@ export class LocalBrowserProvider implements BrowserProvider {
    * The browser's real origin. The origin gate compares a vault item's allowlist
    * against THIS value, never against something the model asserted.
    */
+  /**
+   * Look at the page.
+   *
+   * Bumps the version first, which clears the previous stamps — so every ref
+   * handed out before this call stops resolving. That is the point: a plan built
+   * from an old look cannot half-apply to a page that has since changed.
+   */
+  async snapshot(scope: AccessScope, sessionId: string, maxNodes?: number): Promise<PageSnapshot> {
+    const live = this.#require(scope, sessionId);
+    live.snapshotVersion += 1;
+    return snapshotPage(live.page, live.snapshotVersion, maxNodes);
+  }
+
   async currentOrigin(scope: AccessScope, sessionId: string): Promise<string> {
     const { page } = this.#require(scope, sessionId);
     try {
@@ -308,8 +336,24 @@ export class LocalBrowserProvider implements BrowserProvider {
 }
 
 /** Translate a typed target into a Playwright locator. */
-function locate(page: Page, target: Target): Locator {
+/**
+ * Turn a target into a locator.
+ *
+ * Takes the session's current snapshot version so a stale ref can be rejected
+ * here, with a sentence, rather than becoming a thirty-second Playwright timeout
+ * that is technically a failure and practically a mystery.
+ */
+function locate(page: Page, target: Target, snapshotVersion: number): Locator {
   switch (target.by) {
+    case "ref": {
+      if (!isCurrentRef(target.ref, snapshotVersion)) {
+        throw new Error(
+          `${target.ref} is from an earlier look at this page. Take a new snapshot — ` +
+            `the element it named may have moved or gone.`
+        );
+      }
+      return page.locator(refSelector(target.ref)).first();
+    }
     case "role": {
       const locator = page.getByRole(
         target.role as Parameters<Page["getByRole"]>[0],
