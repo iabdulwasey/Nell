@@ -175,6 +175,224 @@ async function download(
 }
 
 /**
+ * How long nothing may happen before a task is considered stuck.
+ *
+ * Not a limit on how long the work may take — that number does not exist, and
+ * every attempt to guess one has been wrong. A researched document is a longer
+ * job than a summary, and a job that is *still going* has earned the time it is
+ * using. What is bounded is silence: five minutes with nothing arriving means
+ * something is wedged, and the clock is reset by every byte.
+ *
+ * The same rule the browser loop already runs on, arrived at again because the
+ * first version of this picked a bigger number instead of a better question.
+ */
+export const IDLE_LIMIT_MS = 5 * 60 * 1000;
+
+type StreamOutcome =
+  | {
+      readonly ok: true;
+      readonly content: Record<string, unknown>[];
+      readonly stopReason: string | undefined;
+    }
+  | { readonly ok: false; readonly reason: string; readonly retryable: boolean };
+
+/**
+ * One streamed request, reassembled into the shape a whole response has.
+ *
+ * Streaming is not for the typing effect. It is the only way to know a task is
+ * alive: the vendor's search and code tools run inside a single HTTP call, so
+ * without it a five-minute job is one silent request that either returns or does
+ * not, and there is nothing to distinguish work from a hang. With it, every
+ * event is proof of life — which is what lets the bound be on *stalling* rather
+ * than on duration.
+ *
+ * The events are folded back into the same block list the non-streaming API
+ * returns, so everything downstream is unchanged and none of it knows.
+ */
+async function streamOnce(
+  request: AssistRequest,
+  fetchImpl: typeof fetch,
+  messages: Record<string, unknown>[],
+  tools: Record<string, unknown>[]
+): Promise<StreamOutcome> {
+  const controller = new AbortController();
+  const idleMs = request.timeoutMs ?? IDLE_LIMIT_MS;
+
+  let idle = setTimeout(() => {
+    controller.abort();
+  }, idleMs);
+
+  /** Every event is proof of life, so every event buys the same time again. */
+  const alive = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => {
+      controller.abort();
+    }, idleMs);
+  };
+
+  let response: Response;
+  try {
+    response = await fetchImpl("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "x-api-key": request.apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": BETAS,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: request.model,
+        /**
+         * Generous, because the model writes the document *as code*.
+         *
+         * 8192 was fine for an answer and nowhere near a designed PDF: the whole
+         * text of the document is embedded in the Python that produces it, so a
+         * few pages of prose is a few thousand tokens of source before anything
+         * has run. It hit the ceiling mid-line, and the task came back looking
+         * successful.
+         */
+        max_tokens: request.maxTokens ?? 32_000,
+        system: request.system,
+        ...(tools.length > 0 ? { tools } : {}),
+        messages,
+        stream: true,
+      }),
+    });
+  } catch (error) {
+    clearTimeout(idle);
+    return {
+      ok: false,
+      reason:
+        controller.signal.aborted && error instanceof Error
+          ? "nothing happened for five minutes, so I stopped"
+          : (error as Error).message,
+      retryable: true,
+    };
+  }
+
+  if (!response.ok || !response.body) {
+    clearTimeout(idle);
+    const status = response.status;
+    return {
+      ok: false,
+      reason: `${String(status)} from the model`,
+      // 4xx other than rate limiting will fail identically on a retry.
+      retryable: status === 429 || status >= 500,
+    };
+  }
+
+  const blocks: Record<string, unknown>[] = [];
+  /** Partial JSON for a tool's arguments, which arrive as fragments. */
+  const partial = new Map<number, string>();
+  let stopReason: string | undefined;
+
+  try {
+    for await (const event of sse(response.body)) {
+      alive();
+
+      const index = typeof event["index"] === "number" ? event["index"] : -1;
+
+      switch (event["type"]) {
+        case "content_block_start": {
+          const block = { ...(event["content_block"] as Record<string, unknown>) };
+          blocks[index] = block;
+          partial.set(index, "");
+
+          // The one place progress is genuinely known, rather than guessed.
+          if (block["type"] === "server_tool_use") {
+            request.onStep?.(block["name"] === "web_search" ? "Searching." : "Working it out.");
+          }
+          break;
+        }
+
+        case "content_block_delta": {
+          const delta = event["delta"] as Record<string, unknown>;
+          const block = blocks[index];
+          if (!block) break;
+
+          if (delta["type"] === "text_delta") {
+            block["text"] = String(block["text"] ?? "") + String(delta["text"] ?? "");
+          }
+          if (delta["type"] === "input_json_delta") {
+            partial.set(index, (partial.get(index) ?? "") + String(delta["partial_json"] ?? ""));
+          }
+          break;
+        }
+
+        case "content_block_stop": {
+          const block = blocks[index];
+          const json = partial.get(index);
+          // Arguments arrive as fragments and are only valid once complete.
+          if (block && json) {
+            try {
+              block["input"] = JSON.parse(json);
+            } catch {
+              // A tool call whose arguments did not parse is one the caller
+              // will refuse; leaving `input` undefined says so honestly.
+            }
+          }
+          break;
+        }
+
+        case "message_delta": {
+          const delta = event["delta"] as Record<string, unknown> | undefined;
+          if (typeof delta?.["stop_reason"] === "string") stopReason = delta["stop_reason"];
+          break;
+        }
+
+        default:
+          break;
+      }
+    }
+  } catch (error) {
+    clearTimeout(idle);
+    return {
+      ok: false,
+      reason: controller.signal.aborted
+        ? "nothing happened for five minutes, so I stopped"
+        : error instanceof Error
+          ? error.message
+          : "the stream broke",
+      retryable: true,
+    };
+  }
+
+  clearTimeout(idle);
+  return { ok: true, content: blocks.filter(Boolean), stopReason };
+}
+
+/** Server-sent events, one parsed `data:` payload at a time. */
+async function* sse(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(chunk, { stream: true });
+
+    // Events are separated by a blank line; a partial one stays in the buffer.
+    let split = buffer.indexOf("\n\n");
+    while (split !== -1) {
+      const frame = buffer.slice(0, split);
+      buffer = buffer.slice(split + 2);
+      split = buffer.indexOf("\n\n");
+
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          yield JSON.parse(payload) as Record<string, unknown>;
+        } catch {
+          // A frame that does not parse is skipped rather than fatal: one bad
+          // event should not discard a response that is otherwise arriving.
+        }
+      }
+    }
+  }
+}
+
+/**
  * Do the job, with whatever tools are turned on.
  *
  * Returns the model's own words plus every file it produced. Failure is a value
@@ -229,53 +447,16 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
   ];
 
   for (let turn = 0; turn < (request.maxTurns ?? 6); turn += 1) {
-    let response: Response;
-    try {
-      response = await fetchImpl("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        signal: AbortSignal.timeout(request.timeoutMs ?? 300_000),
-        headers: {
-          "x-api-key": request.apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-beta": BETAS,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: request.model,
-          /**
-           * Generous, because the model writes the document *as code*.
-           *
-           * 8192 was fine for an answer and nowhere near a designed PDF: the
-           * whole text of the document is embedded in the Python that produces
-           * it, so a few pages of prose is a few thousand tokens of source
-           * before anything has run. It hit the ceiling mid-line, and the task
-           * came back looking successful.
-           */
-          max_tokens: request.maxTokens ?? 32_000,
-          system: request.system,
-          ...(tools.length > 0 ? { tools } : {}),
-          messages,
-        }),
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        reason: error instanceof Error ? error.message : "request failed",
-        retryable: true,
-      };
+    const streamed = await streamOnce(request, fetchImpl, messages, tools);
+
+    if (!streamed.ok) {
+      return { ok: false, reason: streamed.reason, retryable: streamed.retryable };
     }
 
-    if (!response.ok) {
-      const status = response.status;
-      return {
-        ok: false,
-        reason: `${String(status)} from the model`,
-        // 4xx other than rate limiting will fail identically on a retry.
-        retryable: status === 429 || status >= 500,
-      };
-    }
-
-    const parsed = responseSchema.safeParse(await response.json());
+    const parsed = responseSchema.safeParse({
+      content: streamed.content,
+      stop_reason: streamed.stopReason,
+    });
     if (!parsed.success) return { ok: false, reason: "unexpected reply shape", retryable: true };
 
     const calls: { id: string; name: string; input: unknown }[] = [];

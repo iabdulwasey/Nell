@@ -27,6 +27,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runLoop } from "./agent-loop.js";
 import type { StoredFile } from "./documents.js";
+import { humanise } from "./failure.js";
 
 export interface PipelineDeps {
   readonly browser: BrowserProvider;
@@ -160,7 +161,18 @@ export async function runPipeline(
 
         if (!outcome.ok) {
           deps.onDiagnostic?.(`assist failed: ${outcome.reason}`);
-          return { ok: false, text: "That didn't work. Ask me again?", files: produced };
+
+          /**
+           * Say which way it failed.
+           *
+           * This was a flat "That didn't work. Ask me again?" for every cause,
+           * which threw away an explanation that already existed: the reason
+           * had been computed, logged, and then replaced with a shrug. Running
+           * out of time, running out of room, and writing a file that was never
+           * collected are three different things, and only one of them is worth
+           * asking again about immediately.
+           */
+          return { ok: false, text: humanise(new Error(outcome.reason)).message, files: produced };
         }
 
         for (const file of outcome.files) {
