@@ -1,0 +1,183 @@
+/* Deliberately small. A dashboard whose job is to be trusted should read like a
+   document, not like a product tour. */
+
+:root {
+  --bg: #fbfbfa;
+  --panel: #ffffff;
+  --ink: #1a1a1a;
+  --muted: #6b6b6b;
+  --line: #e4e4e2;
+  --accent: #2b5cff;
+  --warn: #a8620a;
+  --danger: #b3261e;
+  --ok: #1a7f4b;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131313;
+    --panel: #1c1c1c;
+    --ink: #ededed;
+    --muted: #9a9a9a;
+    --line: #2e2e2e;
+    --accent: #7d9bff;
+    --warn: #e0a458;
+    --danger: #f28a80;
+    --ok: #6ed49b;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font:
+    15px/1.55 ui-sans-serif,
+    -apple-system,
+    "Segoe UI",
+    system-ui,
+    sans-serif;
+}
+
+a {
+  color: var(--accent);
+}
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+nav.side {
+  width: 200px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  padding: 20px 12px;
+}
+
+nav.side .brand {
+  font-weight: 650;
+  padding: 0 10px 16px;
+  letter-spacing: -0.01em;
+}
+nav.side a {
+  display: block;
+  padding: 7px 10px;
+  border-radius: 7px;
+  color: var(--ink);
+  text-decoration: none;
+}
+nav.side a:hover {
+  background: var(--line);
+}
+
+main {
+  flex: 1;
+  padding: 28px 32px;
+  max-width: 900px;
+}
+h1 {
+  font-size: 21px;
+  margin: 0 0 4px;
+  letter-spacing: -0.01em;
+}
+h2 {
+  font-size: 15px;
+  margin: 26px 0 10px;
+}
+.lede {
+  color: var(--muted);
+  margin: 0 0 22px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 10px;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: baseline;
+}
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.tag.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.tag.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.tag.ok {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.notice {
+  border-radius: var(--radius);
+  padding: 11px 14px;
+  margin-bottom: 14px;
+  font-size: 14px;
+}
+.notice.danger {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+.notice.warn {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+}
+
+.total {
+  font-size: 19px;
+  font-weight: 640;
+}
+.empty {
+  color: var(--muted);
+  padding: 18px 0;
+}
+
+button.action {
+  font: inherit;
+  padding: 7px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+button.action.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button.action.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}

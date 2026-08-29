@@ -63,16 +63,18 @@ export type {
   CreateSessionOptions,
 } from "./provider.js";
 
-export { LocalBrowserProvider, type LocalBrowserOptions } from "./adapters/local.js";
-
-export { LocalMachineHost, type LocalMachineOptions } from "./adapters/local-machine.js";
-
-export {
-  runComputerActions,
-  screenshotOf,
-  type CaptureOptions,
-  type ComputerRunResult,
-} from "./adapters/computer-exec.js";
+/**
+ * The adapters are NOT exported here.
+ *
+ * They carry a browser binary, and this entry point is imported by everything
+ * that only needs the vocabulary — the policy engine, the view layer, the eval
+ * harness. Re-exporting them from the root would drag Playwright into a
+ * dashboard bundle, which is both absurd in size and wrong in principle: a view
+ * should not be able to reach a driver.
+ *
+ * Import them from `@nell/browser/adapters`.
+ */
+export type { CaptureOptions } from "./provider.js";
 
 export {
   buildSnapshot,

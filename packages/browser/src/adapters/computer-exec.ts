@@ -29,14 +29,14 @@ export function playwrightKey(key: KeyName): string {
   return key === "Space" ? " " : key;
 }
 
-export interface CaptureOptions {
-  /**
-   * Selectors holding filled secrets. Playwright paints over these before the
-   * PNG is encoded, so the value never exists in an image that leaves the
-   * machine — as opposed to being redacted afterwards, which would mean it did.
-   */
-  readonly maskSelectors?: readonly string[];
-}
+/**
+ * Re-exported from the port so there is one definition. Playwright paints over
+ * these selectors before the PNG is encoded, so the value never exists in an
+ * image that leaves the machine — as opposed to being redacted afterwards, which
+ * would mean it did.
+ */
+export type { CaptureOptions } from "../provider.js";
+import type { CaptureOptions } from "../provider.js";
 
 export interface ComputerRunResult {
   readonly screenshot?: string;

@@ -5,15 +5,27 @@
   "license": "FSL-1.1-Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "echo \"web build not implemented yet\" && exit 0",
-    "dev": "echo \"web dev server not implemented yet\" && exit 0",
+    "build": "next build",
+    "dev": "next dev --port 3000",
+    "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"no tests yet\" && exit 0"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@nell/shared": "workspace:*"
+    "@nell/aegis": "workspace:*",
+    "@nell/agent": "workspace:*",
+    "@nell/audit": "workspace:*",
+    "@nell/shared": "workspace:*",
+    "@nell/views": "workspace:*",
+    "next": "15.5.4",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
   },
   "devDependencies": {
-    "@types/node": "24.13.3"
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.1",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
   }
 }

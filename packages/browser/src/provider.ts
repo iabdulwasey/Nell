@@ -11,8 +11,17 @@
  */
 
 import type { AccessScope } from "@nell/shared";
-import type { CaptureOptions } from "./adapters/computer-exec.js";
 import type { ComputerAction, CoordinateSpace } from "./computer.js";
+
+/**
+ * Capture options the provider honours. Declared here rather than imported from
+ * the adapter tree: the port must not depend on an implementation, or every
+ * consumer of the port inherits that implementation's dependencies.
+ */
+export interface CaptureOptions {
+  /** Selectors holding filled secrets, masked before a capture is encoded. */
+  readonly maskSelectors?: readonly string[];
+}
 import type { BrowserAction } from "./dsl.js";
 
 export interface BrowserSession {

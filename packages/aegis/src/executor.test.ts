@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { AuditInput } from "@nell/audit";
 import { accessScopeForUser } from "@nell/shared";
-import { LocalBrowserProvider } from "@nell/browser";
+import { LocalBrowserProvider } from "@nell/browser/adapters";
 import type { BrowserAction, ComputerAction } from "@nell/browser";
 import {
   BrowserExecutor,
