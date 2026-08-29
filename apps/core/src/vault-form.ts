@@ -75,6 +75,15 @@ export interface VaultFormOptions {
   readonly port?: number;
   readonly now?: () => number;
   readonly knownAccount?: KnownAccount;
+  /**
+   * Called once an item is stored, so the write gets a receipt.
+   *
+   * A vault that records what it *uses* but not what was *put into it* leaves
+   * the most interesting question unanswerable: where did this credential come
+   * from, and when. Kept as a hook rather than a direct dependency so this file
+   * still has nothing to do with hash chains.
+   */
+  readonly onSaved?: (scope: AccessScope, kind: VaultItemKind, itemId: string) => Promise<void>;
 }
 
 export interface VaultForm {
@@ -198,8 +207,9 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
      */
     pending.delete(entry.key);
 
+    let saved = "";
     try {
-      await withWorkspace(options.pool, entry.value.scope, (client) =>
+      saved = await withWorkspace(options.pool, entry.value.scope, (client) =>
         saveItem(client, entry.value.scope, options.keys, {
           kind: form.kind,
           label: built.item.label,
@@ -213,6 +223,10 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
       // and nothing in `saveItem` puts one in an error.
       return plain(response, 400, error instanceof Error ? error.message : "That did not save.");
     }
+
+    // After the write and outside its try: a failure to record must not read as
+    // a failure to save, because the item is stored either way.
+    await options.onSaved?.(entry.value.scope, form.kind, saved).catch(() => undefined);
 
     const where = hostOf(origin);
     return plain(response, 200, `Saved${where ? ` for ${where}` : ""}. You can close this tab.`);

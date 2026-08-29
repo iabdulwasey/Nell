@@ -15,6 +15,7 @@ import { accessScopeForUser } from "@nell/shared";
 import { anthropicSearchProvider } from "@nell/integrations";
 import { imageTool, type Capability } from "@nell/agent";
 import { EnvKeyProvider } from "@nell/vault";
+import { auditSink, readAudit } from "./audit-store.js";
 import { assertRlsEnforceable, createPool, withWorkspace } from "./db.js";
 import { run } from "./nell.js";
 import { vaultAccess } from "./vault-secrets.js";
@@ -100,6 +101,19 @@ const vaultKeys = (() => {
 const vault = vaultKeys ? vaultAccess(pool, vaultKeys) : undefined;
 
 /**
+ * One chain, for the one workspace this process serves.
+ *
+ * A hash chain is per-workspace by construction — `appendEntry` refuses to
+ * interleave two — so the sink is bound here rather than created per call.
+ */
+const audit = auditSink(pool, accessScopeForUser(`tg-${owner!}`), (note) => {
+  console.error(note);
+});
+
+/** Supplied rather than taken inside, so audit timestamps stay testable. */
+const stamp = () => new Date().toISOString();
+
+/**
  * One chokepoint for the life of the process.
  *
  * It holds taint state and spend approvals, and both belong to the session
@@ -114,6 +128,18 @@ const vault = vaultKeys ? vaultAccess(pool, vaultKeys) : undefined;
 const executor = new BrowserExecutor({
   driver: browser,
   ...(vault ? { secrets: vault.secrets } : {}),
+  /**
+   * Every consequential step gets written down.
+   *
+   * The executor has called `record` at each of them since Phase 0 and nothing
+   * ever passed it a sink, so the calls were no-ops on `undefined` — which was
+   * survivable while the agent could only read public pages, and stopped being
+   * survivable the day it started typing passwords into them.
+   *
+   * Bound to the one workspace this process serves, because a hash chain is
+   * per-workspace and interleaving two produces a chain nobody can verify.
+   */
+  audit,
 });
 
 /**
@@ -151,6 +177,10 @@ const form =
         // So the form opens with the email already in it and only the password
         // left to type — the part that must be typed there, and the only part.
         knownAccount: vault.knownAccount,
+        // The item id and its kind, never the value — an audit log that records
+        // secrets is a second copy of the vault with no encryption on it.
+        onSaved: (scope, kind, itemId) =>
+          audit.record({ action: "secret.write", subject: itemId, detail: { kind }, at: stamp() }),
       })
     : undefined;
 if (form) console.log("vault: on");
@@ -231,8 +261,17 @@ await run(
       ? {
           vault: {
             list: (scope) => withWorkspace(pool, scope, (client) => listItems(client, scope)),
-            forget: (scope, itemId) =>
-              withWorkspace(pool, scope, (client) => forgetItem(client, scope, itemId)),
+            forget: async (scope, itemId) => {
+              const gone = await withWorkspace(pool, scope, (client) =>
+                forgetItem(client, scope, itemId)
+              );
+              // Recorded only when something was actually removed. An entry for
+              // a delete that deleted nothing is a false memory.
+              if (gone) {
+                await audit.record({ action: "secret.delete", subject: itemId, at: stamp() });
+              }
+              return gone;
+            },
             link: form.link,
             offers: vault.offers,
             knownAccount: vault.knownAccount,
@@ -249,6 +288,8 @@ await run(
      * partway through with nothing to show.
      */
     capabilities: new Set<Capability>(anthropicKey ? ["assist", "browse"] : ["browse"]),
+    /** What was done, chained so an edit to the record is detectable. */
+    audit: (scope) => readAudit(pool, scope),
     ...(search ? { search } : {}),
     log: (line) => {
       console.log(line);

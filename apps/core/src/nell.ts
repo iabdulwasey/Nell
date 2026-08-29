@@ -56,6 +56,7 @@ import {
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
+import type { AuditView } from "./audit-store.js";
 import { FORMS } from "./vault-kinds.js";
 import type { CredentialOffer } from "./vault-secrets.js";
 import type { VaultItemSummary } from "./vault-store.js";
@@ -139,6 +140,8 @@ export interface NellOptions {
     /** Items usable on the page the browser has actually reached. */
     readonly offers: (scope: AccessScope, origin: string) => Promise<readonly CredentialOffer[]>;
   };
+  /** What was done, and whether the record of it still verifies. */
+  readonly audit?: (scope: AccessScope) => Promise<AuditView>;
   readonly keys: ProviderKeys;
   readonly modelId: string;
   readonly telegramToken: string;
@@ -252,6 +255,9 @@ export async function handleMessage(
           )
         )
       );
+    } else if (command === "/audit") {
+      await ensureWorkspace(options, scope);
+      await reply(await auditCommand(options, scope));
     } else if (command === "/vault") {
       await ensureWorkspace(options, scope);
       await reply(await vaultCommand(options, scope, objective));
@@ -745,6 +751,82 @@ async function ensureWorkspace(options: NellOptions, scope: AccessScope): Promis
       scope.workspaceId,
     ]);
   }).catch(() => undefined);
+}
+
+/**
+ * `/audit` — what Nell did, and whether the record of it is intact.
+ *
+ * Worth a command rather than a dashboard-only view, because the audit log is
+ * one of this project's headline claims and a claim nobody can check from where
+ * they are standing is a claim. The chain is verified on every read rather than
+ * behind a button: a log that reports "valid" only when asked nicely is not
+ * doing the job.
+ */
+async function auditCommand(options: NellOptions, scope: AccessScope): Promise<string> {
+  if (!options.audit) return "This install is not keeping an audit log.";
+
+  const view = await options.audit(scope);
+  if (view.total === 0) {
+    return [
+      "Nothing recorded yet. I write down anything consequential — a stored password",
+      "typed into a page, a spend refused, an action blocked by policy — and chain each",
+      "entry to the one before it, so an edit to the record shows up.",
+    ].join("\n");
+  }
+
+  /**
+   * The verification result comes first, before the entries.
+   *
+   * If the chain is broken, that is the only thing on this screen worth reading,
+   * and putting it under twenty lines of history is how it gets missed.
+   */
+  const header = view.valid
+    ? `${String(view.total)} recorded, and the chain verifies.`
+    : `⚠️ The record has been altered — it stops verifying at entry ${String(view.brokenAt ?? 0)}.${
+        view.reason ? ` ${view.reason}` : ""
+      }`;
+
+  return [
+    header,
+    "",
+    ...view.entries.map((entry) => {
+      const when = new Date(entry.at).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      return `${String(entry.sequence)}. ${when} — ${describeAudit(entry.action)} · ${entry.subject.slice(0, 60)}`;
+    }),
+  ].join("\n");
+}
+
+/** Plain words for an action name, since the enum is written for code. */
+function describeAudit(action: string): string {
+  switch (action) {
+    case "vault.fill":
+      return "filled a saved credential";
+    case "secret.decrypt":
+      return "decrypted a secret";
+    case "secret.write":
+      return "saved a secret";
+    case "secret.delete":
+      return "forgot a secret";
+    case "approval.mint":
+      return "asked you to approve a payment";
+    case "approval.spend":
+      return "spent against an approval";
+    case "purchase.execute":
+      return "completed a purchase";
+    case "message.outbound":
+      return "sent a message";
+    case "policy.deny":
+      return "refused an action";
+    case "monitor.fire":
+      return "ran something on a schedule";
+    default:
+      return action;
+  }
 }
 
 /**

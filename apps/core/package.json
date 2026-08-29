@@ -17,6 +17,7 @@
     "@hono/node-server": "1.15.0",
     "@nell/aegis": "workspace:*",
     "@nell/agent": "workspace:*",
+    "@nell/audit": "workspace:*",
     "@nell/browser": "workspace:*",
     "@nell/channels": "workspace:*",
     "@nell/db": "workspace:*",
