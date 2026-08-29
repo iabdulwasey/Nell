@@ -56,6 +56,7 @@ import {
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
+import { recentTurns, rememberTurn, renderConversation } from "./conversation.js";
 import type { AuditView } from "./audit-store.js";
 import { FORMS } from "./vault-kinds.js";
 import type { CredentialOffer } from "./vault-secrets.js";
@@ -524,6 +525,26 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
     readProfile(client, run.scope)
   );
 
+  /**
+   * What was said before — read *before* the turn is written down.
+   *
+   * Ordering matters and is easy to get backwards: recording first would put the
+   * message being handled into its own history, so the model would be shown the
+   * request twice and might read the echo as a separate earlier ask.
+   */
+  const conversation = await withWorkspace(options.pool, run.scope, (client) =>
+    recentTurns(client, run.scope)
+  );
+
+  await withWorkspace(options.pool, run.scope, (client) =>
+    rememberTurn(client, run.scope, {
+      role: "user",
+      body: run.objective,
+      taskId: run.taskId,
+      files: (recent.get(run.scope.workspaceId) ?? []).map((file) => file.name),
+    })
+  ).catch(() => undefined);
+
   let sessionId: string | undefined;
   let outcome: LoopOutcome;
   const produced: { readonly path: string; readonly name: string }[] = [];
@@ -544,6 +565,18 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
       model: options.modelId,
       message: run.objective,
       files: files.map((file) => file.name),
+      /**
+       * The dispatcher interprets as well as classifies.
+       *
+       * It is the one place that sees both the conversation and the request, so
+       * it is where "book the second one" becomes something a worker can carry
+       * out. Everything downstream takes an objective and needs no change.
+       */
+      today: new Date().toDateString(),
+      ...(conversation.length > 0 ? { conversation: renderConversation(conversation) } : {}),
+      ...(profileForPrompt(profile, run.scope)
+        ? { profile: profileForPrompt(profile, run.scope) }
+        : {}),
     });
 
     const missing = unsupported(plan.steps, options.capabilities);
@@ -584,7 +617,14 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
           sessionId = session.id;
           return session.id;
         },
-        objective: run.objective,
+        /**
+         * The resolved objective, not what was typed.
+         *
+         * "Book the second one" reaches here as "book Emirates EK517, 8:40pm,
+         * 3 September to Delhi" — the dispatcher spelled it out from the
+         * conversation, so the worker needs no history of its own.
+         */
+        objective: plan.objective,
         files,
         profile: profileForPrompt(profile, run.scope),
         ...(run.live?.steering ? { steering: run.live.steering } : {}),
@@ -672,6 +712,11 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
     );
     run.live?.onApprovalNeeded?.(labelIn(outcome.reason), sessionId ?? "");
     log(`  → ${outcome.reason.slice(0, 160)}`);
+    // Recorded like any other reply: "shall I pay £42?" is the turn a later
+    // "yes" refers to, and without it that "yes" means nothing.
+    await withWorkspace(options.pool, run.scope, (client) =>
+      rememberTurn(client, run.scope, { role: "nell", body: outcome.reason, taskId: run.taskId })
+    ).catch(() => undefined);
     await reply(outcome.reason);
     return outcome;
   }
@@ -686,6 +731,18 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
    * outcome had to be inferred from the steps before it.
    */
   if (!outcome.ok) log(`  → ${said.slice(0, 200)}`);
+
+  /**
+   * And the reply is remembered, which is what makes the next turn work.
+   *
+   * Written even when the task failed: "that site needs a login" is exactly the
+   * context that makes the following message ("ok add one then") intelligible,
+   * and a history that records only successes reads as though the failures
+   * never happened.
+   */
+  await withWorkspace(options.pool, run.scope, (client) =>
+    rememberTurn(client, run.scope, { role: "nell", body: said, taskId: run.taskId })
+  ).catch(() => undefined);
 
   await reply(said);
   return outcome;

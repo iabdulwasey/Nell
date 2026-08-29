@@ -231,6 +231,44 @@ export const taskLedger = pgTable(
   (table) => [index("task_ledger_workspace_idx").on(table.workspaceId, table.completedAt)]
 );
 
+/**
+ * What was said, in order.
+ *
+ * The thing every other memory table assumed somebody else was keeping. There
+ * are preferences (standing facts), a ledger (structured outcomes) and an audit
+ * log (what was done) — and until this table there was nowhere holding the
+ * conversation, so "book the second one" could not be answered and Nell's own
+ * replies were never written down at all.
+ *
+ * **Provenance is a column because it decides what a turn may cause.** A user's
+ * message is trusted: they are the principal. Nell's own replies are not, and
+ * the reason is specific rather than cautious — a reply quotes web pages, so a
+ * hostile page that gets quoted once would come back next turn as "conversation
+ * history" and be read as instruction. That is injection taking the long way
+ * round through us, and it is why recall renders these as a record of what was
+ * said and never as something to obey.
+ */
+export const messages = pgTable(
+  "messages",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /** "user" or "nell". */
+    role: text("role").notNull(),
+    body: text("body").notNull(),
+    /** `user` only when the user wrote it. See the note above. */
+    provenance: text("provenance").notNull(),
+    /** Which task this turn belonged to, when it belonged to one. */
+    taskId: text("task_id"),
+    /** Files sent with this turn, by name, so "review it" resolves later. */
+    files: jsonb("files").notNull().default([]),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("messages_workspace_at_idx").on(table.workspaceId, table.at)]
+);
+
 /** Append-only hash-chained audit log. Never updated, never deleted. */
 export const auditLog = pgTable(
   "audit_log",
@@ -259,5 +297,6 @@ export const TENANT_TABLES = [
   "notification_outbox",
   "preferences",
   "task_ledger",
+  "messages",
   "audit_log",
 ] as const;

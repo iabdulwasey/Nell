@@ -8,6 +8,13 @@
       "when": 1787995591668,
       "tag": "0000_silly_arclight",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788036054787,
+      "tag": "0001_shocking_moondragon",
+      "breakpoints": true
     }
   ]
 }

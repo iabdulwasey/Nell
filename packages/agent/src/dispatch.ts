@@ -83,6 +83,14 @@ export interface Dispatch {
   readonly steps: readonly Step[];
   /** One line for the user, so a slow job is visibly the job they asked for. */
   readonly summary: string;
+  /**
+   * The request with everything it referred to spelled out.
+   *
+   * Equal to the message itself when nothing needed resolving, which is the
+   * common case — so a caller can use this unconditionally rather than deciding
+   * when a rewrite happened.
+   */
+  readonly objective: string;
 }
 
 /**
@@ -101,6 +109,28 @@ const dispatchSchema = {
     summary: {
       type: "string",
       description: "One short line naming what you are about to do, for the user to read.",
+    },
+    /**
+     * The field that makes a follow-up work, and it belongs here rather than
+     * anywhere downstream.
+     *
+     * "Book the second one" is not a task any worker can carry out — the second
+     * of what is in the previous turn, which the worker never sees. Rewriting it
+     * *here* into "book Emirates EK517, 8:40pm, 3 September to Delhi" fixes
+     * follow-ups for both capabilities at once, because everything past this
+     * point already takes an objective and nothing else has to change.
+     *
+     * The alternative — handing the whole conversation to every worker — is
+     * worse in two ways: it pays for the history on every step of a multi-step
+     * job, and it makes each worker responsible for resolving pronouns while it
+     * is also trying to drive a page.
+     */
+    objective: {
+      type: "string",
+      description:
+        "The request rewritten so it stands alone, with anything it refers to from earlier " +
+        "spelled out — names, numbers, dates, prices. If it already stands alone, repeat it " +
+        "unchanged. Never invent a detail that was not said.",
     },
     steps: {
       type: "array",
@@ -132,11 +162,12 @@ const dispatchSchema = {
       },
     },
   },
-  required: ["summary", "steps"],
+  required: ["summary", "objective", "steps"],
 };
 
 const parsed = z.object({
   summary: z.string().max(200).default(""),
+  objective: z.string().max(2000).default(""),
   steps: z
     .array(
       z.object({
@@ -154,6 +185,28 @@ export interface DispatchRequest {
   readonly message: string;
   /** Names of files the user has sent, which change what is answerable without the web. */
   readonly files?: readonly string[];
+  /**
+   * What has been said before, already rendered and already carrying its own
+   * framing about which parts are trusted.
+   *
+   * Rendered by the caller rather than passed as turns, because the rule that
+   * the user's words authorize and Nell's past replies only inform is a
+   * property of how it is *shown*, and one place should own that sentence.
+   */
+  readonly conversation?: string;
+  /** What Nell knows about this person, as the brain document. */
+  readonly profile?: string;
+  /**
+   * Today's date.
+   *
+   * The planner has had this for weeks and the dispatcher never did, which
+   * showed up the moment it started resolving follow-ups: a conversation
+   * mentioning "3 September" with no year became "3 September 2025" — the
+   * model's training cutoff, written in confidently while being told to invent
+   * nothing. A rewrite that fills in the wrong year is worse than one that
+   * leaves it out, because the year now looks like something the user said.
+   */
+  readonly today?: string;
   readonly timeoutMs?: number;
 }
 
@@ -179,6 +232,7 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
   if (files.length > 0) {
     return {
       summary: "Reading what you sent.",
+      objective: request.message,
       steps: [{ capability: "assist", instruction: request.message }],
     };
   }
@@ -186,6 +240,8 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
   const outcome: CompletionOutcome = await request.provider.complete({
     model: request.model,
     system: [
+      `Today is ${request.today ?? new Date().toDateString()}.`,
+      "",
       "Decide what a request needs, and choose the cheapest way that will actually work.",
       "",
       "Almost everything is `assist`: the model can answer, search the live web, and write",
@@ -199,11 +255,27 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
       "Use one step unless the job genuinely needs a different capability part-way —",
       "generating pictures then packaging them, or browsing for something then writing it",
       "up. Steps run in order and feed each other.",
+      "",
+      "A message is often a follow-up: 'book the second one', 'what about Thursday', 'no,",
+      "the earlier flight'. Read what was said before and write `objective` so it stands on",
+      "its own — the worker doing it never sees the conversation. Carry across the exact",
+      "names, numbers and dates that were mentioned, and invent nothing that was not.",
       files.length > 0 ? `\nThe user has sent: ${files.join(", ")}.` : "",
     ].join("\n"),
     schema: dispatchSchema,
     timeoutMs: request.timeoutMs,
-    messages: [{ role: "user", content: request.message }],
+    messages: [
+      {
+        role: "user",
+        content: [
+          request.profile?.trim() ? `${request.profile.trim()}\n` : "",
+          request.conversation?.trim() ? `${request.conversation.trim()}\n` : "",
+          `They have now said: ${request.message}`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      },
+    ],
   });
 
   if (!outcome.ok) return fallback(request.message);
@@ -211,13 +283,20 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
   const result = parsed.safeParse(outcome.value);
   if (!result.success) return fallback(request.message);
 
-  return { summary: result.data.summary, steps: result.data.steps };
+  return {
+    summary: result.data.summary,
+    // Falling back to the raw message rather than to an empty string: a model
+    // that skips the field must not erase the request.
+    objective: result.data.objective.trim() || request.message,
+    steps: result.data.steps,
+  };
 }
 
 /** When the router cannot say, browse: it can attempt the most, and fails visibly. */
 function fallback(message: string): Dispatch {
   return {
     summary: "Having a look.",
+    objective: message,
     steps: [
       {
         capability: OBVIOUSLY_BROWSING.test(message) ? "browse" : "assist",
