@@ -246,6 +246,267 @@ describe("when a step fails on the page", () => {
     expect(outcome.steps).toBeLessThan(12);
   });
 
+  /**
+   * A malformed plan is a correctable mistake, not the end of a task.
+   *
+   * Watched live: asked to plan a trip, the model proposed an action outside the
+   * vocabulary and the task ended there — four steps in, on the first slip. The
+   * action-failure path next to it had already learned this; this one had not.
+   */
+  it("tells the model what was wrong with a plan and lets it try again", async () => {
+    let call = 0;
+    const clumsy = {
+      name: "stub",
+      complete: async () => {
+        call += 1;
+        // Invalid the first time, fine after being told.
+        return call === 1
+          ? {
+              ok: true,
+              value: {
+                reasoning: "improvising",
+                actions: [{ action: "teleport", to: "the answer" }],
+                done: false,
+                answer: "",
+                search: "",
+              },
+              usage: { inputTokens: 0, outputTokens: 0 },
+            }
+          : {
+              ok: true,
+              value: {
+                reasoning: "done",
+                actions: [],
+                done: true,
+                answer: "the answer",
+                search: "",
+              },
+              usage: { inputTokens: 0, outputTokens: 0 },
+            };
+      },
+    } as unknown as ModelProvider;
+
+    const outcome = await runLoop(
+      { provider, executor: executor(0).executor, model: clumsy, modelId: "m" },
+      { scope, sessionId: "s", objective: "plan a trip" }
+    );
+
+    expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+    expect(call).toBeGreaterThan(1);
+  });
+
+  /**
+   * Telling the model a site is dead is not enough — it decided that site was
+   * the right one. Three attempts at one host and two at another consumed most
+   * of a task's budget, every one failing identically within a second.
+   */
+  it("refuses to go back to a site that would not load", async () => {
+    let gotos = 0;
+    const refusing = {
+      execute: async (
+        _scope: unknown,
+        _id: unknown,
+        request: { actions: { action: string }[] }
+      ) => {
+        if (request.actions.some((a) => a.action === "goto")) {
+          gotos += 1;
+          throw new Error("page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://www.dead.example/x");
+        }
+        return { ok: true };
+      },
+    } as unknown as BrowserExecutor;
+
+    const insistent = {
+      name: "stub",
+      complete: async () => ({
+        ok: true,
+        value: {
+          reasoning: "trying that site again",
+          actions: [{ action: "goto", url: "https://www.dead.example/x" }],
+          done: false,
+          answer: "",
+          search: "",
+        },
+        usage: { inputTokens: 0, outputTokens: 0 },
+      }),
+    } as unknown as ModelProvider;
+
+    await runLoop(
+      { provider, executor: refusing, model: insistent, modelId: "m" },
+      { scope, sessionId: "s", objective: "go to the dead site", maxSteps: 12 }
+    );
+
+    // It learned after the first failure rather than after the twelfth.
+    expect(gotos).toBeLessThanOrEqual(2);
+  });
+
+  /**
+   * A request is often several questions wearing one sentence — "flights, stay,
+   * places to visit, activities" is four. Asked to plan a trip, the agent read a
+   * single package listing and called that the plan, having never looked at a
+   * flight. A model asked whether it is finished will say yes once it has
+   * something, so the checklist is enforced rather than requested.
+   */
+  it("will not finish while parts of the request are unanswered", async () => {
+    let turn = 0;
+    const hasty = {
+      name: "stub",
+      complete: async () => {
+        turn += 1;
+        return {
+          ok: true,
+          value: {
+            reasoning: `turn ${String(turn)}`,
+            actions: [],
+            done: true,
+            answer: "here is a package",
+            search: "",
+            // Claims to be finished with three parts still open, twice; the
+            // third turn genuinely has them all.
+            outstanding: turn > 2 ? [] : ["flights", "hotels", "activities"],
+          },
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    } as unknown as ModelProvider;
+
+    const notes: string[] = [];
+    const outcome = await runLoop(
+      { provider, executor: executor(0).executor, model: hasty, modelId: "m" },
+      { scope, sessionId: "s", objective: "plan a trip", onDiagnostic: (n) => notes.push(n) }
+    );
+
+    expect(outcome.ok).toBe(true);
+    // It was sent back rather than accepted on the first claim.
+    expect(turn).toBe(3);
+    expect(notes.join(" ")).toContain("finish refused");
+  });
+
+  /**
+   * And it does not hold out forever. A model still reporting open items after
+   * several attempts is telling us they cannot be got — the prices are behind a
+   * login, the venue does not publish times. Refusing past that trades a partial
+   * answer for none, and the partial answer is the one worth having.
+   */
+  it("accepts a partial answer rather than insisting indefinitely", async () => {
+    const stubborn = {
+      name: "stub",
+      complete: async () => ({
+        ok: true,
+        value: {
+          reasoning: "this is all I can get",
+          actions: [],
+          done: true,
+          answer: "partial, but real",
+          search: "",
+          outstanding: ["flight prices"],
+        },
+        usage: { inputTokens: 0, outputTokens: 0 },
+      }),
+    } as unknown as ModelProvider;
+
+    const outcome = await runLoop(
+      { provider, executor: executor(0).executor, model: stubborn, modelId: "m" },
+      { scope, sessionId: "s", objective: "plan a trip" }
+    );
+
+    expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+    if (outcome.ok) expect(outcome.answer).toContain("partial");
+  });
+
+  /**
+   * The same correction the structured turn got, which the looking turn did not.
+   *
+   * A task that had spent three minutes genuinely researching flights and hotels
+   * ended because its last turn named an action that did not exist. That the fix
+   * had landed on one of two identical code paths is the lesson: the looking
+   * turn was written later and copied the shape without the guard — twice now,
+   * once for driver exceptions and once for this.
+   */
+  it("lets the looking turn recover from a malformed plan too", async () => {
+    // Unchanging page, so the loop escalates to vision after a few turns.
+    const frozen = {
+      snapshot: async () => ({
+        url: "https://example.com/frozen",
+        title: "t",
+        nodes: [],
+        text: "",
+        truncated: false,
+      }),
+      coordinateSpace: () => ({
+        display: { width: 1024, height: 768 },
+        viewport: { width: 1440, height: 900 },
+      }),
+    } as unknown as BrowserProvider;
+
+    // Returns a picture, so the looking turn can actually run.
+    const withScreenshot = {
+      execute: async () => ({
+        ok: true,
+        result: { screenshot: "iVBORw0KGgo=", currentOrigin: "https://example.com" },
+      }),
+    } as unknown as BrowserExecutor;
+
+    let visionTurns = 0;
+    const model = {
+      name: "stub",
+      complete: async (request: { system: string }) => {
+        const looking = request.system.includes("looking at a browser window");
+        if (!looking) {
+          return {
+            ok: true,
+            value: {
+              reasoning: "structured",
+              actions: [{ action: "click", target: { by: "text", text: "Go" } }],
+              done: false,
+              answer: "",
+              search: "",
+              outstanding: [],
+            },
+            usage: { inputTokens: 0, outputTokens: 0 },
+          };
+        }
+
+        visionTurns += 1;
+        // Invalid on its first look, correct once told.
+        return visionTurns === 1
+          ? {
+              ok: true,
+              value: {
+                reasoning: "improvising",
+                actions: [{ action: "teleport", to: "somewhere" }],
+                done: false,
+                answer: "",
+                navigate: "",
+                search: "",
+              },
+              usage: { inputTokens: 0, outputTokens: 0 },
+            }
+          : {
+              ok: true,
+              value: {
+                reasoning: "read it off the screen",
+                actions: [],
+                done: true,
+                answer: "the answer",
+                navigate: "",
+                search: "",
+              },
+              usage: { inputTokens: 0, outputTokens: 0 },
+            };
+      },
+    } as unknown as ModelProvider;
+
+    const outcome = await runLoop(
+      { provider: frozen, executor: withScreenshot, model, modelId: "m" },
+      { scope, sessionId: "s", objective: "find it" }
+    );
+
+    expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+    // It looked, was rejected, was told why, and looked again.
+    expect(visionTurns).toBeGreaterThan(1);
+  });
+
   /** The complaint that started this. */
   it("never puts the driver's words in front of the user", async () => {
     const { executor: exec } = executor(Number.POSITIVE_INFINITY);

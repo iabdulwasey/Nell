@@ -48,6 +48,21 @@ describe("what the user is told", () => {
     expect(detail).toContain("Timeout 30000ms");
   });
 
+  /**
+   * A navigation race is not a broken task — it is a page still moving. It
+   * reached a user as "That didn't work and I couldn't tell why", which is the
+   * generic line, because nothing classified it.
+   */
+  it("describes a page that moved as a page that moved", () => {
+    const { message } = humanise(
+      new Error(
+        "page.evaluate: Execution context was destroyed, most likely because of a navigation"
+      )
+    );
+    expect(message).toContain("kept moving");
+    expect(message).not.toContain("couldn't tell why");
+  });
+
   it("distinguishes the failures that call for different responses", () => {
     expect(humanise(new Error("net::ERR_CONNECTION_REFUSED")).message).toContain("couldn't reach");
     expect(humanise(new Error("Browser session not found.")).message).toContain("browser closed");

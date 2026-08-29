@@ -109,6 +109,25 @@ export const MAX_ACTION_FAILURES = 3;
  */
 export const HARD_STEP_CAP = 100;
 
+/**
+ * Malformed plans in a row before giving up.
+ *
+ * A model that proposes an action outside the vocabulary has made a correctable
+ * mistake — told what was wrong, it almost always fixes it next turn. A model
+ * that cannot produce a valid plan three times running is not going to.
+ */
+export const MAX_BAD_PLANS = 3;
+
+/**
+ * Times the agent is sent back to finish before its answer is accepted anyway.
+ *
+ * A model that still reports open items after three attempts is usually telling
+ * us they cannot be got — the flight prices are behind a login, the venue does
+ * not publish times. Holding out past that trades a partial answer for none, and
+ * a partial answer is what the user would rather have.
+ */
+export const MAX_FINISH_REFUSALS = 3;
+
 export type LoopOutcome =
   /**
    * `answer` is what the user asked for; `summary` is what the agent was doing.
@@ -174,6 +193,27 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
   let consecutiveFailures = 0;
   /** Every page state this task has been in. Returning to one is not progress. */
   const seen = new Set<string>();
+  /**
+   * Malformed plans in a row. Reset by any plan that validates.
+   *
+   * An object rather than a number because the looking turn shares it, and a
+   * count that resets when the agent changes sense is not counting the thing
+   * that matters.
+   */
+  const badPlanCounter = { count: 0 };
+  /** Parts of the request the last turn said were still open. */
+  let outstanding: readonly string[] = [];
+  /** Times the agent has been sent back to finish the job. */
+  let finishRefusals = 0;
+  /**
+   * Sites that would not load.
+   *
+   * Watched live: a trip-planning task tried the same travel site three times
+   * and a second one twice, every attempt failing identically with an HTTP/2
+   * protocol error, and spent most of its budget doing it. Nothing remembered
+   * that a host was dead, so nothing stopped it going back.
+   */
+  const deadHosts = new Set<string>();
   /** Once the structured sense has stalled, the rest of the task is driven by eye. */
   let looking = false;
 
@@ -294,6 +334,7 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
         history,
         step,
         searched,
+        bad: badPlanCounter,
         ...(request.profile ? { profile: request.profile } : {}),
       });
       if (seen.done) return seen.outcome;
@@ -308,20 +349,45 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
       snapshot,
       history,
       findings,
+      outstanding,
       ...(request.profile ? { profile: request.profile } : {}),
     });
 
     if (!planned.ok) {
-      /**
-       * `explainPlanFailure` interpolates the provider's own words — an API
-       * error body, a rate-limit notice — into a sentence for the user. Useful
-       * in a terminal, meaningless in a chat message, so the vendor's half is
-       * kept for the log and the user gets the classified version.
-       */
-      const failure = humanise(new Error(planned.failure.reason));
       request.onDiagnostic?.(explainPlanFailure(planned.failure));
+      badPlanCounter.count += 1;
+
+      /**
+       * A malformed plan is a correctable mistake, not the end of a task.
+       *
+       * Watched live: asked to plan a trip, the model proposed an action outside
+       * the vocabulary, and the task ended there — four steps in, on the first
+       * slip, having done nothing wrong that another turn could not fix. The
+       * action-failure path had already learned this lesson; the plan-failure
+       * path next to it had not.
+       *
+       * The model is told what it got wrong, because it cannot see the
+       * validator's complaint otherwise and will otherwise make the same
+       * proposal again. `reason` here is the schema's own message — safe to
+       * show a model, never shown to the user.
+       */
+      if (badPlanCounter.count < MAX_BAD_PLANS) {
+        history.push(
+          planned.failure.kind === "provider"
+            ? "That attempt did not come back. Try again."
+            : `That plan was rejected: ${planned.failure.reason} Use only the actions given.`
+        );
+        continue;
+      }
+
+      // `explainPlanFailure` interpolates the provider's own words — useful in a
+      // terminal, meaningless in a chat message — so the user gets the
+      // classified version and the log keeps the rest.
+      const failure = humanise(new Error(planned.failure.reason));
       return { ok: false, steps: step, reason: failure.message, detail: failure.detail };
     }
+
+    badPlanCounter.count = 0;
 
     request.onStep?.(planned.plan.reasoning);
     history.push(planned.plan.reasoning);
@@ -365,7 +431,34 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
       continue;
     }
 
+    outstanding = planned.plan.outstanding;
+
     if (planned.plan.done) {
+      /**
+       * Finishing is refused while parts of the request are unanswered.
+       *
+       * A request is often several questions wearing one sentence — "flights,
+       * stay, places to visit, activities" is four — and a model asked whether
+       * it is done will say yes once it has something. Asked to plan a trip, it
+       * read a single package listing and called that the plan, having never
+       * looked at a flight.
+       *
+       * Enforced here rather than asked for in the prompt, because the model
+       * owns both the checklist and the claim to be finished, and only one of
+       * those can be checked. `finishRefusals` bounds it: a model that insists
+       * three times is telling us the remaining items cannot be got, and holding
+       * out for them would trade a partial answer for none.
+       */
+      if (outstanding.length > 0 && finishRefusals < MAX_FINISH_REFUSALS) {
+        finishRefusals += 1;
+        request.onDiagnostic?.(`finish refused; still open: ${outstanding.join("; ")}`);
+        history.push(
+          `Not finished — still unanswered: ${outstanding.join("; ")}. ` +
+            `Go and find those before answering.`
+        );
+        continue;
+      }
+
       return {
         ok: true,
         steps: step,
@@ -405,6 +498,26 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
      * working: a few consecutive failures with no progress in between is a wall,
      * not a wobble.
      */
+    /**
+     * Refuse to go back to a site that would not load.
+     *
+     * Telling the model was not enough — it had decided that site was the right
+     * one, and a note in the history does not outweigh that. So the retry is
+     * prevented rather than discouraged: three attempts at one dead host and two
+     * at another consumed most of a task's budget, every one failing the same
+     * way within a second.
+     */
+    const revisit = planned.plan.actions.find(
+      (action) => action.action === "goto" && deadHosts.has(hostOf(action.url))
+    );
+    if (revisit && revisit.action === "goto") {
+      history.push(
+        `${hostOf(revisit.url)} already refused to load twice. It will not work. ` +
+          `Find the answer somewhere else.`
+      );
+      continue;
+    }
+
     let outcome;
     try {
       outcome = await deps.executor.execute(request.scope, request.sessionId, {
@@ -431,11 +544,22 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
         return { ok: false, steps: step, reason: failure.message, detail: failure.detail };
       }
 
-      // Told plainly, so the model tries something else rather than the same
-      // element again. It cannot see the exception; this is all it gets.
+      /**
+       * Told plainly, so the model tries something else rather than the same
+       * element again. It cannot see the exception; this is all it gets.
+       *
+       * A navigation failure is named by host, because "that did not work" does
+       * not stop a model going back to the same dead site — and it will, having
+       * decided that site was the right one.
+       */
+      const dead = hostFromError(error);
+      if (dead) deadHosts.add(dead);
+
       history.push(
-        "That last step did not work — the element was not there, or the page moved. " +
-          "Look at the page again and try a different way."
+        dead
+          ? `${dead} will not load — it is not going to start. Use a different site.`
+          : "That last step did not work — the element was not there, or the page moved. " +
+              "Look at the page again and try a different way."
       );
       continue;
     }
@@ -462,6 +586,8 @@ interface LookState {
   readonly profile?: string;
   /** Shared with the structured turn, so a query is never paid for twice. */
   readonly searched: Set<string>;
+  /** Shared, mutable: malformed plans in a row, across both senses. */
+  readonly bad: { count: number };
 }
 
 interface LookResult {
@@ -540,13 +666,34 @@ async function lookAndAct(
   });
 
   if (!planned.ok) {
-    const failure = humanise(new Error(planned.reason));
     request.onDiagnostic?.(`vision: ${planned.reason}`);
+    state.bad.count += 1;
+
+    /**
+     * The same correction the structured turn got, which this one did not.
+     *
+     * A malformed plan is a correctable mistake: told what was wrong, the model
+     * almost always fixes it next turn. Ending here threw away a task that had
+     * spent three minutes genuinely researching flights and hotels, because the
+     * last turn named an action that did not exist.
+     *
+     * That the fix landed on one of two identical code paths is the lesson: the
+     * looking turn was written later and copied the shape without the guard,
+     * twice now — once for driver exceptions, once for this.
+     */
+    if (state.bad.count < MAX_BAD_PLANS) {
+      state.history.push(`That plan was rejected: ${planned.reason} Use only the actions listed.`);
+      return { done: false, outcome: { ok: false, steps: state.step, reason: "" } };
+    }
+
+    const failure = humanise(new Error(planned.reason));
     return {
       done: true,
       outcome: { ok: false, steps: state.step, reason: failure.message, detail: failure.detail },
     };
   }
+
+  state.bad.count = 0;
 
   request.onStep?.(planned.plan.reasoning);
   state.history.push(planned.plan.reasoning);
@@ -569,7 +716,8 @@ async function lookAndAct(
     } catch (error) {
       const failure = humanise(error);
       request.onDiagnostic?.(`vision navigate failed: ${failure.detail}`);
-      state.history.push(`I could not open ${planned.plan.navigate}. Try somewhere else.`);
+      const dead = hostFromError(error) ?? planned.plan.navigate;
+      state.history.push(`${dead} will not load — it is not going to start. Use a different site.`);
     }
     return { done: false, outcome: { ok: false, steps: state.step, reason: "" } };
   }
@@ -634,6 +782,34 @@ async function lookAndAct(
     outcome: { ok: false, steps: state.step, reason: "" },
     ...(planned.plan.answer.trim() ? { answer: planned.plan.answer.trim() } : {}),
   };
+}
+
+/** The host of a URL, or the URL itself when it will not parse. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./u, "");
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * The host a navigation error was about.
+ *
+ * Playwright puts the URL in the message — `page.goto: net::ERR_HTTP2_PROTOCOL_
+ * ERROR at https://example.com/x`. Pulling the host out is what lets the agent
+ * be told which site to stop trying, rather than being told, uselessly, that
+ * something did not work.
+ */
+function hostFromError(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const match = /https?:\/\/[^\s)]+/u.exec(error.message);
+  if (!match) return undefined;
+  try {
+    return new URL(match[0]).hostname.replace(/^www\./u, "");
+  } catch {
+    return undefined;
+  }
 }
 
 /**

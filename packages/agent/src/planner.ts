@@ -102,12 +102,34 @@ export function buildPlanSchema(): Record<string, unknown> {
           "A web search to run before acting, when you need to find pages rather than " +
           "act on one. Returns titles and URLs to navigate to. Leave empty if not needed.",
       },
+      /**
+       * The parts of the request still unanswered.
+       *
+       * A request is often several questions wearing one sentence — "flights,
+       * stay, places to visit, activities" is four. Without somewhere to keep
+       * them the agent finds one page that touches the subject and stops, which
+       * is what happened: asked to plan a trip, it read a single package listing
+       * and reported it as the plan, having never looked at a flight.
+       *
+       * Carried in the plan rather than inferred, so the model restates it every
+       * turn and cannot quietly lose an item. The loop refuses `done` while this
+       * is non-empty, which is what makes it a mechanism instead of advice.
+       */
+      outstanding: {
+        type: "array",
+        maxItems: 8,
+        items: { type: "string" },
+        description:
+          "Every part of the request not yet answered, restated each turn. Break a request " +
+          "with several parts into those parts on the first turn. Remove one only once you " +
+          "have the actual information, not once you have found a page that might have it.",
+      },
       done: {
         type: "boolean",
-        description: "True when the objective is already achieved and nothing more is needed.",
+        description: "True only when `outstanding` is empty and `answer` holds the whole result.",
       },
     },
-    required: ["reasoning", "actions", "done", "answer", "search"],
+    required: ["reasoning", "actions", "done", "answer", "search", "outstanding"],
   };
 }
 
@@ -123,6 +145,7 @@ const rawPlanSchema = z.object({
   // trade, and the channel renderers already split long messages.
   answer: z.string().max(8000).default(""),
   search: z.string().max(MAX_SEARCH_QUERY).default(""),
+  outstanding: z.array(z.string().max(200)).max(8).default([]),
 });
 
 export interface Plan {
@@ -133,6 +156,8 @@ export interface Plan {
   readonly answer: string;
   /** A search to run before these actions. Empty when none is wanted. */
   readonly search: string;
+  /** Parts of the request still unanswered. `done` is refused while non-empty. */
+  readonly outstanding: readonly string[];
 }
 
 export type PlanFailure =
@@ -183,6 +208,10 @@ export const SYSTEM_PROMPT = [
   "a page with the answer on it and stopping there leaves them with nothing. Read",
   "what you came for off the page and put it in `answer`, in full.",
   "",
+  "A request is often several questions in one sentence. Break it into parts on",
+  "your first turn, keep them in `outstanding`, and answer each one properly —",
+  "finding a single page that mentions the subject is not the same as answering.",
+  "",
   "If the thing asked for is not there — no showings, nothing in stock, no such",
   "page — say that. It is a complete answer, and a better one than continuing to",
   "look for something that does not exist.",
@@ -200,6 +229,8 @@ export interface PlanRequest {
   readonly snapshot: PageSnapshot;
   /** What has already been tried, so the model does not loop. */
   readonly history?: readonly string[];
+  /** What the last turn said was still missing, echoed back so it is not lost. */
+  readonly outstanding?: readonly string[];
   /**
    * Search results gathered this task. Kept separate from `history` because one
    * is the agent's own account of its work and the other is third-party text —
@@ -265,6 +296,7 @@ export async function planNext(request: PlanRequest): Promise<PlanOutcome> {
         done: parsed.data.done,
         answer: parsed.data.answer,
         search: parsed.data.done ? "" : parsed.data.search.trim(),
+        outstanding: parsed.data.outstanding,
       },
     };
   }
@@ -294,6 +326,7 @@ export async function planNext(request: PlanRequest): Promise<PlanOutcome> {
       done: parsed.data.done,
       answer: parsed.data.answer,
       search: parsed.data.search.trim(),
+      outstanding: parsed.data.outstanding,
     },
   };
 }
@@ -328,9 +361,15 @@ function renderContext(request: PlanRequest): string {
     ? ["About the user — their own words, and reliable:", request.profile.trim(), ""]
     : [];
 
+  const remaining =
+    request.outstanding && request.outstanding.length > 0
+      ? ["", "Still unanswered:", ...request.outstanding.map((item: string) => `- ${item}`)]
+      : [];
+
   return [
     ...about,
     `Objective: ${request.objective}`,
+    ...remaining,
     ...history,
     ...found,
     "",

@@ -30,6 +30,19 @@ export interface Failure {
 
 const PATTERNS: readonly { readonly test: RegExp; readonly message: string }[] = [
   {
+    /**
+     * Not a failure at all — a page that moved while being read.
+     *
+     * Clicking a link starts a navigation, and a snapshot taken during it throws
+     * this. The loop already waits and looks again, so it is nearly always
+     * invisible. It reaches a user only when it is the last thing that happened,
+     * and then the honest description is that the site was still moving, not
+     * that something broke.
+     */
+    test: /execution context was destroyed|frame was detached|navigating and changing/iu,
+    message: "The page kept moving while I was reading it. Ask again and I'll pick up from there.",
+  },
+  {
     // The most common by far: an element never appeared, or the page moved.
     test: /timeout|timed out|waiting for (?:locator|selector)/iu,
     message:
@@ -63,6 +76,9 @@ const PATTERNS: readonly { readonly test: RegExp; readonly message: string }[] =
   },
 ];
 
+const SCHEMA_REJECTION =
+  /invalid discriminator|expected array to have|invalid_(type|union)|expected '/iu;
+
 const GENERIC = "That didn't work and I couldn't tell why. Ask me again and I'll have another go.";
 
 /**
@@ -78,6 +94,22 @@ export function humanise(error: unknown): Failure {
 
   for (const pattern of PATTERNS) {
     if (pattern.test.test(haystack)) return { message: pattern.message, detail };
+  }
+
+  /**
+   * A validator's complaint, not a vendor's.
+   *
+   * "Invalid discriminator value. Expected 'screenshot' | 'cursor_position' |
+   * …" reached a user as the generic line, which told them nothing. It is the
+   * model proposing something outside the vocabulary — worth saying plainly,
+   * because it means the request itself was fine.
+   */
+  if (SCHEMA_REJECTION.test(haystack)) {
+    return {
+      message:
+        "I got confused about how to do that step and couldn't recover. Ask me again — it usually works the second time.",
+      detail,
+    };
   }
 
   return { message: GENERIC, detail };
