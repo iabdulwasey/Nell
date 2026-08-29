@@ -104,3 +104,25 @@ export {
   type DeletionRequest,
   type DeletionScope,
 } from "./deletion.js";
+
+export {
+  buildIndex,
+  cosineSimilarity,
+  orphaned,
+  rebuildIndex,
+  searchMemory,
+  recencyWeight,
+  renderRecalled,
+  sourceKindSchema,
+  stem,
+  tokenize,
+  DEFAULT_RECALL_LIMIT,
+  RECENCY_HALF_LIFE_DAYS,
+  type EmbeddingProvider,
+  type IndexEntry,
+  type MemoryHit,
+  type RebuildReceipt,
+  type RecallOptions,
+  type SourceKind,
+  type SourceRecord,
+} from "./recall.js";
