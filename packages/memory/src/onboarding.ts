@@ -176,6 +176,20 @@ export function greeting(): string {
     "every time, not just the first. And I only know what you tell me or what I learn from doing",
     "things for you; I have not looked you up, and I will not.",
     "",
+    /**
+     * Listed, because until now they were not.
+     *
+     * Four commands existed and `/help` returned this text without naming any of
+     * them, so the only way to find one was to already know it was there. The
+     * vault matters most: a saved login is the difference between "book me a
+     * table" working and stopping at a sign-in, and nobody guesses at a command
+     * to discover that.
+     */
+    "A few things I can be told directly:",
+    "- /vault — logins I can sign in with, and how to add one",
+    "- /schedules — anything I'm doing on a repeat, and /stop to cancel",
+    "- /models — what this install can do, and which key would add the rest",
+    "",
     "What do you need?",
   ].join("\n");
 }
