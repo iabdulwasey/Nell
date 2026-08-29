@@ -93,30 +93,43 @@ try {
 
 await client.query(policies);
 
-const TENANT_TABLES = [
-  "workspace_members",
-  "vault_items",
-  "vault_secrets",
-  "tasks",
-  "approvals",
-  "monitors",
-  "monitor_reports",
-  "notification_outbox",
-  "preferences",
-  "task_ledger",
-  "audit_log",
-];
-
-const { rows: unprotected } = await client.query(
-  `SELECT c.relname
+/**
+ * Which tables are tenant-scoped is asked of the database, not listed here.
+ *
+ * This script used to carry its own copy of the list, and it had silently
+ * fallen two tables behind the schema — `directives` and `messages` were both
+ * absent, so the gate that exists to prove row-level security is live would have
+ * reported "verified" while a new table sat wide open. A security check that
+ * fails open through drift is worse than no check, because it is quoted in the
+ * README as though it means something.
+ *
+ * The rule that cannot drift: **a table with a `workspace_id` column belongs to
+ * a tenant, and must have RLS forced.** That is true by construction rather than
+ * by anybody remembering, and it covers a table added tomorrow by someone who
+ * never reads this file. `workspaces` is correctly excluded — it has `id`, not
+ * `workspace_id`, because it is the registry that *defines* tenants rather than
+ * a table scoped to one.
+ */
+const { rows: tenantTables } = await client.query(
+  `SELECT c.relname,
+          (c.relrowsecurity AND c.relforcerowsecurity) AS protected
      FROM pg_class c
      JOIN pg_namespace n ON n.oid = c.relnamespace
+     JOIN pg_attribute a ON a.attrelid = c.oid
     WHERE n.nspname = 'public'
-      AND c.relname = ANY($1)
-      AND NOT (c.relrowsecurity AND c.relforcerowsecurity)`,
-  [TENANT_TABLES]
+      AND c.relkind = 'r'
+      AND a.attname = 'workspace_id'
+      AND NOT a.attisdropped
+    ORDER BY c.relname`
 );
 
+if (tenantTables.length === 0) {
+  console.error("Found no tenant tables at all — the schema did not apply.");
+  await client.end();
+  process.exit(1);
+}
+
+const unprotected = tenantTables.filter((row) => !row.protected);
 if (unprotected.length > 0) {
   console.error(
     `Row-level security is NOT active on: ${unprotected.map((r) => r.relname).join(", ")}`
@@ -131,14 +144,14 @@ const {
   "SELECT count(*)::int AS count FROM pg_policies WHERE schemaname = 'public'"
 );
 
-if (policyCount < TENANT_TABLES.length) {
-  console.error(`Expected at least ${TENANT_TABLES.length} policies, found ${policyCount}.`);
+if (policyCount < tenantTables.length) {
+  console.error(`Expected at least ${tenantTables.length} policies, found ${policyCount}.`);
   await client.end();
   process.exit(1);
 }
 
 console.log(
-  `row-level security verified on ${TENANT_TABLES.length} tables (${policyCount} policies)`
+  `row-level security verified on ${tenantTables.length} tables (${policyCount} policies)`
 );
 
 await client.end();

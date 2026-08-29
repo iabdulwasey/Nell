@@ -73,6 +73,13 @@ CREATE POLICY task_ledger_workspace_isolation ON task_ledger
   USING (workspace_id = current_setting('app.workspace_id', true))
   WITH CHECK (workspace_id = current_setting('app.workspace_id', true));
 
+ALTER TABLE directives ENABLE ROW LEVEL SECURITY;
+ALTER TABLE directives FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS directives_workspace_isolation ON directives;
+CREATE POLICY directives_workspace_isolation ON directives
+  USING (workspace_id = current_setting('app.workspace_id', true))
+  WITH CHECK (workspace_id = current_setting('app.workspace_id', true));
+
 ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE messages FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS messages_workspace_isolation ON messages;

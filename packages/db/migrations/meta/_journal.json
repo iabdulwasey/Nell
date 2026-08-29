@@ -15,6 +15,13 @@
       "when": 1788036054787,
       "tag": "0001_shocking_moondragon",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788037380209,
+      "tag": "0002_rapid_mantis",
+      "breakpoints": true
     }
   ]
 }

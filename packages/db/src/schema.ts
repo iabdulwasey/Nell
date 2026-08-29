@@ -232,6 +232,36 @@ export const taskLedger = pgTable(
 );
 
 /**
+ * Standing rules, kept apart from facts on purpose.
+ *
+ * `preferences` holds what Nell *knows* — where you live, which airline you
+ * like. This holds what Nell must *do*: always ask before spending over £50,
+ * never message my landlord directly. The distinction is not tidiness, it is
+ * that the two fail differently — a missed fact prompts a question, a missed
+ * directive breaks a promise — and only one of them is something the user
+ * expects to be obeyed rather than recalled.
+ *
+ * Superseded by revocation rather than deletion, so "you told me to stop doing
+ * that on the 4th" stays answerable.
+ */
+export const directives = pgTable(
+  "directives",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    rule: text("rule").notNull(),
+    /** A directive can only ever come from the user; recorded so that is auditable. */
+    provenance: text("provenance").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [index("directives_workspace_idx").on(table.workspaceId, table.createdAt)]
+);
+
+/**
  * What was said, in order.
  *
  * The thing every other memory table assumed somebody else was keeping. There
@@ -297,6 +327,7 @@ export const TENANT_TABLES = [
   "notification_outbox",
   "preferences",
   "task_ledger",
+  "directives",
   "messages",
   "audit_log",
 ] as const;
