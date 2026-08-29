@@ -15,6 +15,24 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    # A real database, because the integration tests skip silently without one —
+    # and the bug they found (permissive RLS policies enforcing nothing) is
+    # invisible to every unit test in the repository.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nell_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +46,24 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # The application role must NOT be able to bypass row-level security. A
+      # superuser ignores every policy even on a FORCE'd table, so a suite run as
+      # `postgres` would pass while proving the opposite of what it claims.
+      - name: Provision the restricted application role
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d nell_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE nell_app LOGIN PASSWORD 'nell_app' NOSUPERUSER NOBYPASSRLS;
+          GRANT USAGE, CREATE ON SCHEMA public TO nell_app;
+          SQL
+
+      - name: Migrate and verify row-level security
+        env:
+          DATABASE_URL: postgres://nell_app:nell_app@localhost:5432/nell_test
+        run: node packages/db/scripts/migrate.mjs
+
       - name: Check (typecheck + lint + test + format + license audit)
+        env:
+          DATABASE_URL: postgres://nell_app:nell_app@localhost:5432/nell_test
         run: pnpm check
 
       - name: Build
