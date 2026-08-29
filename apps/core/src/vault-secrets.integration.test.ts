@@ -64,7 +64,10 @@ const store = (value: Record<string, unknown>, kind = "login") =>
     saveItem(client, scope, keys, {
       kind,
       label: "Shop",
-      origins: ["https://shop.example"],
+      // A login must name a site; the other kinds are stored with none at all,
+      // which is what makes this a test of the unbound path rather than of an
+      // item that merely happens to match.
+      origins: kind === "login" ? ["https://shop.example"] : [],
       value: JSON.stringify(value),
     })
   );
@@ -137,6 +140,41 @@ describeDb("handing a field to the browser", () => {
     }
   });
 
+  /**
+   * The asymmetry, against a real database.
+   *
+   * An address is usable at a shop it was never stored for — that is the point,
+   * and it is what makes filling in intake paperwork possible. It is still not
+   * usable on a page that is not encrypted, which is the part a simpler
+   * "unbound means unchecked" implementation would quietly drop.
+   */
+  it("fills an address anywhere https, and nowhere else", async () => {
+    const id = await store(
+      {
+        kind: "address",
+        line1: "12 Rosewood Court",
+        city: "Bristol",
+        postalCode: "BS1",
+        country: "GB",
+      },
+      "address"
+    );
+    const { secrets, offers } = vaultAccess(pool, keys);
+
+    for (const anywhere of ["https://shop.example", "https://a-shop-never-seen.example"]) {
+      const outcome = await secrets.reveal(scope, id, anywhere, "value");
+      expect(outcome.ok, anywhere).toBe(true);
+      expect(
+        (await offers(scope, anywhere)).map((item) => item.id),
+        anywhere
+      ).toEqual([id]);
+    }
+
+    // Unbound is not unchecked.
+    expect((await secrets.reveal(scope, id, "http://shop.example", "value")).ok).toBe(false);
+    expect(await offers(scope, "http://shop.example")).toHaveLength(0);
+  });
+
   /** The gate the whole design rests on, asserted here as well as in the store. */
   it("gives nothing at all from another site", async () => {
     const id = await store(login);
@@ -173,6 +211,38 @@ describeDb("what the agent is shown", () => {
    * that site and can say so on the page. Never mentioning it means a hostile
    * page cannot learn what the user has by getting the agent to try.
    */
+  /**
+   * The email the person actually uses, taken from what they have already saved
+   * rather than asked for a second time.
+   *
+   * Worth asserting the *ordering* rather than merely that something comes back:
+   * "most used" is the claim, and a query that returned whichever row came first
+   * would pass a weaker test while prefilling the wrong address — which the user
+   * would then have to notice and correct, on the one form where not reading
+   * carefully is expensive.
+   */
+  it("prefills the account used most, not the one stored first", async () => {
+    const { knownAccount } = vaultAccess(pool, keys);
+    expect(await knownAccount(scope)).toBeUndefined();
+
+    const save = (hint: string, origin: string) =>
+      withWorkspace(pool, scope, (client) =>
+        saveItem(client, scope, keys, {
+          kind: "login",
+          label: origin,
+          accountHint: hint,
+          origins: [origin],
+          value: JSON.stringify({ ...login, username: hint, origins: [origin] }),
+        })
+      );
+
+    await save("old@example.com", "https://a.example");
+    await save("ada@example.com", "https://b.example");
+    await save("ada@example.com", "https://c.example");
+
+    expect(await knownAccount(scope)).toBe("ada@example.com");
+  });
+
   it("offers nothing on a site the item is not for", async () => {
     await store(login);
     const { offers } = vaultAccess(pool, keys);

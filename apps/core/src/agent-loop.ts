@@ -182,6 +182,17 @@ export type LoopOutcome =
        */
       readonly needsApproval?: boolean;
       /**
+       * The task stopped at a sign-in with nothing saved for that site, and this
+       * is the site — read from the live session, never from the model.
+       *
+       * Carried so the caller can offer the way out in the same message. "That
+       * site needs a login" is a dead end; the same sentence with a link to add
+       * one is a task the user can finish in twenty seconds. The distinction
+       * matters more than it sounds: a credential nobody knew how to add is a
+       * vault that exists and is never used.
+       */
+      readonly needsCredentialFor?: string;
+      /**
        * The technical cause, for the log. Never sent to the user — the whole
        * point of `reason` is that it is written for a person.
        */
@@ -531,6 +542,29 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     }
 
     outstanding = planned.plan.outstanding;
+
+    /**
+     * Stopped at a sign-in with nothing saved for the site.
+     *
+     * Checked against `credentials` rather than taken on the model's word: it
+     * has been shown what is stored for this page, so claiming otherwise while
+     * an item is listed means it failed to use one, and offering to add a
+     * second copy of a credential the user already gave us would be worse than
+     * useless. Only when both agree — the model is at a wall and the vault is
+     * empty for this origin — is there anything to offer.
+     *
+     * The origin is the snapshot's, never the model's.
+     */
+    if (planned.plan.signIn && credentials.length === 0) {
+      const site = originOf(snapshot.url);
+      request.onDiagnostic?.(`sign-in wall at ${site} with nothing saved`);
+      return {
+        ok: false,
+        steps: step,
+        reason: `That site wants a sign-in, and I do not have a login saved for it.`,
+        ...(site ? { needsCredentialFor: site } : {}),
+      };
+    }
 
     if (planned.plan.done) {
       /**

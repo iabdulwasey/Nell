@@ -32,6 +32,8 @@ export interface VaultAccess {
   /** Items usable on the page the browser is actually on. Never values. */
   readonly offers: (scope: AccessScope, origin: string) => Promise<readonly CredentialOffer[]>;
   readonly secrets: SecretSource;
+  /** The account this person signs in with, if they have told us once already. */
+  readonly knownAccount: (scope: AccessScope) => Promise<string | undefined>;
 }
 
 /**
@@ -49,6 +51,41 @@ export function vaultAccess(pool: Pool, keys: KeyProvider): VaultAccess {
         itemsForOrigin(client, scope, origin)
       );
       return items.map(summarise);
+    },
+
+    /**
+     * The email the person actually uses, inferred from what they have already
+     * saved rather than asked for again.
+     *
+     * The vault turns out to be the best place to look. Somebody with three
+     * logins stored has told us their email three times; the most repeated
+     * `accountHint` is that email with far better odds than anything a model
+     * could guess, and it costs one query and no new data to collect. A first
+     * credential has nothing to go on and the field is simply blank, which is
+     * the correct answer rather than a failure.
+     *
+     * Ties break towards the most recently saved — people change address, and
+     * the newer one is the one they are still reading.
+     */
+    knownAccount: async (scope) => {
+      /**
+       * Its own query rather than `listItems`, which orders by label — and
+       * "most used, then most recent" cannot be computed from an alphabetical
+       * list. Reads one non-secret column, so it widens nothing: `account_hint`
+       * is already what the agent is shown.
+       */
+      const { rows } = await withWorkspace(pool, scope, (client) =>
+        client.query<{ account_hint: string }>(
+          `SELECT account_hint
+             FROM vault_items
+            WHERE workspace_id = $1 AND account_hint IS NOT NULL AND account_hint <> ''
+            GROUP BY account_hint
+            ORDER BY count(*) DESC, max(updated_at) DESC
+            LIMIT 1`,
+          [scope.workspaceId]
+        )
+      );
+      return rows[0]?.account_hint;
     },
 
     secrets: {

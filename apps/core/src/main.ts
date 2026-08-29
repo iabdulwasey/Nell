@@ -143,7 +143,16 @@ const search = anthropicKey ? anthropicSearchProvider({ apiKey: anthropicKey }) 
  * Only started when there is a key to encrypt with — a form that collects
  * credentials and has nowhere to put them is worse than no form.
  */
-const form = vaultKeys ? await startVaultForm({ pool, keys: vaultKeys }) : undefined;
+const form =
+  vaultKeys && vault
+    ? await startVaultForm({
+        pool,
+        keys: vaultKeys,
+        // So the form opens with the email already in it and only the password
+        // left to type — the part that must be typed there, and the only part.
+        knownAccount: vault.knownAccount,
+      })
+    : undefined;
 if (form) console.log("vault: on");
 
 const controller = new AbortController();
@@ -226,6 +235,7 @@ await run(
               withWorkspace(pool, scope, (client) => forgetItem(client, scope, itemId)),
             link: form.link,
             offers: vault.offers,
+            knownAccount: vault.knownAccount,
           },
         }
       : {}),

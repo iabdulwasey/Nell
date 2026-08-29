@@ -28,6 +28,7 @@ import type { AccessScope } from "@nell/shared";
 import {
   decryptSecret,
   encryptSecret,
+  originBound,
   vaultItemKindSchema,
   type KeyProvider,
   type Secret,
@@ -93,8 +94,18 @@ export async function saveItem(
    * an allowlist stops meaning anything.
    */
   const origins = [...new Set(input.origins.map((origin) => normalize(origin)).filter(Boolean))];
-  if (origins.length === 0) {
-    throw new Error("A vault item needs at least one origin, or it can never be used.");
+
+  /**
+   * Required for a login, and only for a login.
+   *
+   * The rule lives in `originBound` beside the kinds themselves, so "which items
+   * are site-scoped" is answered in one place rather than re-decided at every
+   * call site. An address with no origins is a correctly stored address; a login
+   * with none is an item that can never be filled anywhere, which is a footgun
+   * saved for later.
+   */
+  if (originBound(kind.data) && origins.length === 0) {
+    throw new Error("A saved login needs at least one site, or it can never be used.");
   }
 
   const id = randomUUID();
@@ -165,9 +176,49 @@ export async function itemsForOrigin(
   origin: string
 ): Promise<readonly VaultItemSummary[]> {
   const all = await listItems(client, scope);
-  return all.filter(
-    (item) => checkOrigin({ actualOrigin: origin, allowlist: item.origins }).allowed
-  );
+  return all.filter((item) => usableAt(item.kind, item.origins, origin).allowed);
+}
+
+/**
+ * One decision, asked by both the listing and the reveal.
+ *
+ * Two places deciding what "usable here" means is one too many: the moment they
+ * disagree, the vault either offers a credential it will then refuse or hides
+ * one it would have handed over. The first wastes a task; the second is worse,
+ * because it looks like the vault being empty.
+ */
+function usableAt(
+  kind: string,
+  allowlist: readonly string[],
+  actualOrigin: string
+): { allowed: true } | { allowed: false; reason: string } {
+  const parsed = vaultItemKindSchema.safeParse(kind);
+  // An unrecognised kind is refused rather than treated as unbound. A row that
+  // should not exist must not be the one that skips the check.
+  if (!parsed.success) return { allowed: false, reason: "That item is of an unknown kind." };
+
+  if (originBound(parsed.data)) {
+    const decision = checkOrigin({ actualOrigin, allowlist });
+    return decision.allowed
+      ? { allowed: true }
+      : { allowed: false, reason: explainOriginDenial(decision.reason) };
+  }
+
+  /**
+   * Unbound, but not unchecked.
+   *
+   * An address is usable anywhere; it is still not usable on a page that is not
+   * encrypted. `checkOrigin` bundles the scheme rule with the allowlist rule, so
+   * the scheme is asked here on its own — against the item's own origin, which
+   * always passes an allowlist containing itself.
+   */
+  const normalized = normalizeOrigin(actualOrigin);
+  if (!normalized) return { allowed: false, reason: "The browser reported no readable origin." };
+
+  const decision = checkOrigin({ actualOrigin: normalized, allowlist: [normalized] });
+  return decision.allowed
+    ? { allowed: true }
+    : { allowed: false, reason: explainOriginDenial(decision.reason) };
 }
 
 export type RevealOutcome =
@@ -192,7 +243,7 @@ export async function revealForOrigin(
   actualOrigin: string
 ): Promise<RevealOutcome> {
   const { rows } = await client.query(
-    `SELECT i.origins, s.encrypted_value
+    `SELECT i.kind, i.origins, s.encrypted_value
        FROM vault_items i
        JOIN vault_secrets s
          ON s.item_id = i.id AND s.workspace_id = i.workspace_id AND s.namespace = $3
@@ -200,19 +251,15 @@ export async function revealForOrigin(
     [itemId, scope.workspaceId, NAMESPACE]
   );
 
-  const row = rows[0] as { origins?: string[]; encrypted_value?: string } | undefined;
+  const row = rows[0] as
+    | { kind?: string; origins?: string[]; encrypted_value?: string }
+    | undefined;
   // Reported as missing rather than forbidden: a caller learns nothing about
   // what exists in another workspace.
   if (!row?.encrypted_value) return { ok: false, reason: "No such vault item." };
 
-  const decision = checkOrigin({
-    actualOrigin,
-    allowlist: row.origins ?? [],
-  });
-
-  if (!decision.allowed) {
-    return { ok: false, reason: explainOriginDenial(decision.reason) };
-  }
+  const decision = usableAt(row.kind ?? "", row.origins ?? [], actualOrigin);
+  if (!decision.allowed) return { ok: false, reason: decision.reason };
 
   /**
    * Decrypted last, and only once the origin has passed.

@@ -94,6 +94,11 @@ export interface PipelineOutcome {
   readonly text: string;
   /** Files to send back. */
   readonly files: readonly Produced[];
+  /**
+   * The site a task stopped on for want of a login, so the reply can carry the
+   * way to fix it rather than only the news that it is broken.
+   */
+  readonly needsCredentialFor?: string;
 }
 
 /**
@@ -231,7 +236,16 @@ export async function runPipeline(
           }
         );
 
-        if (!outcome.ok) return { ok: false, text: outcome.reason, files: produced };
+        if (!outcome.ok) {
+          return {
+            ok: false,
+            text: outcome.reason,
+            files: produced,
+            ...(outcome.needsCredentialFor
+              ? { needsCredentialFor: outcome.needsCredentialFor }
+              : {}),
+          };
+        }
         carried = outcome.answer || outcome.summary;
         break;
       }

@@ -36,6 +36,7 @@ import {
 import type { BrowserProvider } from "@nell/browser";
 import type { SearchProvider } from "@nell/integrations";
 import { greeting } from "@nell/memory";
+import type { VaultItemKind } from "@nell/vault";
 import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
 import { runLoop, type LoopOutcome } from "./agent-loop.js";
@@ -55,6 +56,7 @@ import {
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
+import { FORMS } from "./vault-kinds.js";
 import type { CredentialOffer } from "./vault-secrets.js";
 import type { VaultItemSummary } from "./vault-store.js";
 import {
@@ -125,8 +127,15 @@ export interface NellOptions {
     /** Items held for this workspace. Never values. */
     readonly list: (scope: AccessScope) => Promise<readonly VaultItemSummary[]>;
     readonly forget: (scope: AccessScope, itemId: string) => Promise<boolean>;
-    /** A one-time loopback link for adding one. */
-    readonly link: (scope: AccessScope, origin?: string) => string;
+    /** A one-time loopback link for adding one, prefilled with what is known. */
+    readonly link: (
+      scope: AccessScope,
+      origin?: string,
+      username?: string,
+      kind?: VaultItemKind
+    ) => string;
+    /** The account this person signs in with, from what they have saved before. */
+    readonly knownAccount: (scope: AccessScope) => Promise<string | undefined>;
     /** Items usable on the page the browser has actually reached. */
     readonly offers: (scope: AccessScope, origin: string) => Promise<readonly CredentialOffer[]>;
   };
@@ -579,9 +588,38 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
     );
 
     produced.push(...result.files);
-    outcome = result.ok
-      ? { ok: true, steps: plan.steps.length, summary: plan.summary, answer: result.text }
-      : { ok: false, steps: plan.steps.length, reason: result.text };
+
+    /**
+     * Stopped for want of a login — so send the way to fix it, here, now.
+     *
+     * This is the agent→human handoff the whole vault exists for, and the
+     * moment is the point: at a sign-in wall, about a named site, while the
+     * person is still thinking about the thing they asked for. Told an hour
+     * later in a settings page, nobody does it.
+     *
+     * The site comes from the browser's live URL and the account from what the
+     * user has saved before, so the link opens with everything known already in
+     * it and only the password left to type. The model supplied neither.
+     */
+    const site = result.needsCredentialFor;
+    if (!result.ok && site && options.vault) {
+      const known = await options.vault.knownAccount(run.scope).catch(() => undefined);
+      const link = options.vault.link(run.scope, site, known);
+      outcome = {
+        ok: false,
+        steps: plan.steps.length,
+        reason: [
+          `${result.text} Add one here and I'll pick this back up: ${link}`,
+          "",
+          "Open it on the computer I'm running on. It works once, expires in ten",
+          "minutes, and keeps the password out of this chat entirely.",
+        ].join("\n"),
+      };
+    } else {
+      outcome = result.ok
+        ? { ok: true, steps: plan.steps.length, summary: plan.summary, answer: result.text }
+        : { ok: false, steps: plan.steps.length, reason: result.text };
+    }
   } catch (error) {
     // `error.message`, verbatim, whatever it happened to be. Someone who asked
     // for cinema times should not receive a stack frame.
@@ -744,23 +782,51 @@ async function vaultCommand(
 
   if (verb.toLowerCase() === "add") {
     /**
+     * `/vault add`, `/vault add card`, `/vault add united.com`.
+     *
+     * The word after `add` is either which of the four sections they mean or the
+     * site a login is for, and telling them apart by looking is better than
+     * making somebody remember an order. The tabs on the page cover a wrong
+     * guess in one click, so this only has to be right most of the time.
+     */
+    const asked = rest[0]?.toLowerCase() ?? "";
+    const section = FORMS.find(
+      (candidate) => candidate.kind === asked || candidate.section.toLowerCase() === asked
+    );
+    const site = section ? rest[1] : rest[0];
+    const known = await vault.knownAccount(scope).catch(() => undefined);
+
+    /**
      * Minted only when asked for, and it expires.
      *
      * A standing URL that adds credentials to your vault is a standing URL that
      * adds credentials to your vault, and it would sit in a chat history forever.
      */
-    const url = vault.link(scope, rest[0]);
+    const url = vault.link(scope, site, known, section?.kind);
     return [
       `Open this on the computer I'm running on: ${url}`,
       "",
-      "It works once and expires in ten minutes. Typing the password there instead of",
-      "here means it goes straight into the vault without passing through Telegram.",
+      "Logins, addresses, cards and phone numbers — the tabs at the top switch between",
+      "them. It works once and expires in ten minutes. Typing a password there instead",
+      "of here keeps it out of this chat entirely.",
     ].join("\n");
   }
 
+  /**
+   * The order the user sees, computed once and used by both the listing and the
+   * deletion.
+   *
+   * Numbering a grouped list while resolving numbers against an ungrouped one is
+   * a silent off-by-however-many — `/vault forget 3` would delete whatever
+   * happened to be third alphabetically, report the wrong label cheerfully, and
+   * the person would not find out until a task failed to sign in. Nearly
+   * introduced exactly that by grouping the display and leaving this alone.
+   */
+  const ordered = FORMS.flatMap((section) => items.filter((item) => item.kind === section.kind));
+
   if (verb.toLowerCase() === "forget") {
     const index = Number(rest[0]);
-    const target = Number.isInteger(index) ? items[index - 1] : undefined;
+    const target = Number.isInteger(index) ? ordered[index - 1] : undefined;
     if (!target) return "Send /vault to see the list, then /vault forget with a number from it.";
     const gone = await vault.forget(scope, target.id);
     return gone ? `Forgotten: ${target.label}.` : "That one was already gone.";
@@ -768,25 +834,45 @@ async function vaultCommand(
 
   if (items.length === 0) {
     return [
-      "Nothing saved yet. Send /vault add to store a login — I'll give you a link to",
-      "type it into, so it never goes through this chat.",
+      "Nothing saved yet. Four things I can keep: logins, addresses, cards and phone",
+      "numbers — the things a checkout or a booking form asks for.",
       "",
-      "Once one is saved I can sign in to that site myself. I only ever see a label;",
-      "the password is typed into the page without passing through me.",
+      "Send /vault add and I'll give you a link to type them into, so they never go",
+      "through this chat. Once a login is saved I can sign in to that site myself: I",
+      "only ever see a label, and the password is typed into the page without passing",
+      "through me.",
     ].join("\n");
   }
 
-  return [
-    "Saved logins:",
-    ...items.map(
-      (item, index) =>
-        `${String(index + 1)}. ${item.label}${item.accountHint ? ` — ${item.accountHint}` : ""} (${item.origins
-          .map((origin) => origin.replace(/^https?:\/\//u, ""))
-          .join(", ")})`
-    ),
-    "",
-    "/vault add to store another · /vault forget <number> to remove one.",
-  ].join("\n");
+  /**
+   * Grouped by section, numbered straight through.
+   *
+   * The numbers run across the whole list rather than restarting per section, so
+   * `/vault forget 3` means one thing. Restarting them would put two items on
+   * the same number, and the cost of picking wrong here is deleting a credential
+   * somebody has to go and find again.
+   */
+  const lines: string[] = [];
+  let heading = "";
+  for (const [position, item] of ordered.entries()) {
+    const section = FORMS.find((candidate) => candidate.kind === item.kind);
+    if (section && section.section !== heading) {
+      heading = section.section;
+      if (lines.length > 0) lines.push("");
+      lines.push(`${heading}:`);
+    }
+    const where = item.origins.map((origin) => origin.replace(/^https?:\/\//u, "")).join(", ");
+    lines.push(
+      `${String(position + 1)}. ${item.label}${item.accountHint ? ` — ${item.accountHint}` : ""}${
+        where ? ` (${where})` : ""
+      }`
+    );
+  }
+  lines.push("");
+
+  return [...lines, "/vault add to store another · /vault forget <number> to remove one."].join(
+    "\n"
+  );
 }
 
 /**

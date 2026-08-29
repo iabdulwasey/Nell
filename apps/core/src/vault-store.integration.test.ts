@@ -109,9 +109,35 @@ describeDb("storing a secret", () => {
     expect(JSON.stringify(items)).not.toContain("correct horse");
   });
 
-  /** An item nobody can use is a footgun stored for later. */
-  it("refuses an item with no origins at all", async () => {
-    await expect(save(ada, [])).rejects.toThrow(/origin/iu);
+  /**
+   * A login nobody can use is a footgun stored for later — but the rule is about
+   * logins, not about items.
+   *
+   * An address with no sites is a correctly stored address: it is filled in
+   * wherever it is asked for, and scoping it to one shop would make the
+   * intake-paperwork case impossible without making anything safer. Both halves
+   * are asserted here, because a later change that makes the four kinds
+   * "consistent" would break exactly one of them and look tidy doing it.
+   */
+  it("refuses a login with no site, and accepts an address with none", async () => {
+    await expect(save(ada, [])).rejects.toThrow(/site/iu);
+
+    const id = await withWorkspace(pool, ada, (client) =>
+      saveItem(client, ada, keys, {
+        kind: "address",
+        label: "Home",
+        origins: [],
+        value: JSON.stringify({
+          kind: "address",
+          line1: "12 Rosewood Court",
+          city: "Bristol",
+          postalCode: "BS1",
+          country: "GB",
+        }),
+      })
+    );
+
+    expect(id).toBeTruthy();
   });
 });
 

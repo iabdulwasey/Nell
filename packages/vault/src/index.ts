@@ -32,6 +32,7 @@ export {
   identitySchema,
   isLuhnValid,
   loginSecretSchema,
+  originBound,
   parseVaultItem,
   paymentCardBrand,
   paymentCardSchema,

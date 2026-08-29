@@ -73,9 +73,15 @@ describe("reaching the form", () => {
 
     expect(response.status).toBe(200);
     const html = await response.text();
-    // Prefilled, so the person does not retype the site the agent just failed on.
-    expect(html).toContain("https://shop.example");
+    // Shown rather than asked for, so the login is bound to the page the browser
+    // was actually on and there is no box in which to change it.
+    expect(html).toContain("shop.example");
+    expect(html).not.toContain('name="origin"');
     expect(html).toContain('name="password"');
+    // All four sections are reachable, not just the one the link opened.
+    for (const section of ["Logins", "Addresses", "Cards", "Phones"]) {
+      expect(html, section).toContain(section);
+    }
   });
 
   /**
@@ -102,6 +108,81 @@ describe("reaching the form", () => {
      */
     expect(await statusWithHost(url, "evil.example")).toBe(403);
     expect(await statusWithHost(url, "127.0.0.1")).toBe(200);
+  });
+
+  /**
+   * The agent→human handoff, which is the flow this page exists inside.
+   *
+   * The agent hits a sign-in, and the form opens knowing the site and the email
+   * — so the only thing left to type is the one thing that has to be typed here.
+   * Neither value came from the model: the site is the browser's live URL and
+   * the account is what the user has saved before.
+   */
+  it("opens with the site and the known account already in it", async () => {
+    form = await startVaultForm({
+      pool: refusingPool,
+      keys,
+      port: 0,
+      now: () => clock,
+      knownAccount: () => Promise.resolve("ada@example.com"),
+    });
+
+    const html = await (await fetch(form.link(scope, "https://airline.example"))).text();
+
+    expect(html).toContain("airline.example");
+    expect(html).toContain('value="ada@example.com"');
+
+    /**
+     * The cursor starts at the first box with nothing in it — which, with the
+     * username already known, is Name rather than Username. Asserted as "the
+     * first empty one" rather than by naming a field, so reordering the form
+     * cannot leave the focus somewhere the person has to click past.
+     */
+    const focused = /<input name="([a-z]+)"[\s\S]*?autofocus/u.exec(html)?.[1];
+    expect(focused).toBe("label");
+    expect(html).not.toMatch(/name="username"[\s\S]*?autofocus/u);
+  });
+
+  /**
+   * There is no parameter that could carry one, and this asserts nothing grows
+   * one by accident. A password field arriving with something already in it is a
+   * field people submit without reading — which is the whole failure mode this
+   * page is built to avoid.
+   */
+  it("never prefills the password, whatever else is known", async () => {
+    form = await startVaultForm({
+      pool: refusingPool,
+      keys,
+      port: 0,
+      now: () => clock,
+      knownAccount: () => Promise.resolve("ada@example.com"),
+    });
+
+    const html = await (await fetch(form.link(scope, "https://airline.example"))).text();
+    const field = /<input name="password"[\s\S]*?>/u.exec(html)?.[0] ?? "";
+
+    expect(field).toContain('type="password"');
+    // No value attribute at all — not an empty one, which is a weaker claim
+    // that an accidental prefill could later satisfy.
+    expect(field).not.toContain("value=");
+  });
+
+  /**
+   * A first credential has nothing to go on, and a database that is down is not
+   * a reason to refuse a password someone is standing there trying to give us.
+   */
+  it("still opens when nothing is known and when the lookup fails", async () => {
+    form = await startVaultForm({
+      pool: refusingPool,
+      keys,
+      port: 0,
+      now: () => clock,
+      knownAccount: () => Promise.reject(new Error("database is down")),
+    });
+
+    const response = await fetch(form.link(scope));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('name="username"');
   });
 
   it("refuses a token nobody minted", async () => {
@@ -146,7 +227,7 @@ describe("submitting", () => {
     const response = await fetch(url, body({ origin: "https://shop.example", username: "ada" }));
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("all needed");
+    expect(await response.text()).toContain("username and a password are needed");
     // Still live, because nothing was stored.
     expect((await fetch(url)).status).toBe(200);
   });

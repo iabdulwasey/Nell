@@ -15,6 +15,37 @@ import { z } from "zod";
 
 export const vaultItemKindSchema = z.enum(["login", "payment", "address", "identity", "phone"]);
 
+/**
+ * Whether an item may only be used on sites it was stored for.
+ *
+ * A password is bound to one site because a password *means* nothing anywhere
+ * else — and because a stored password with no site attached is the phishing
+ * hole: a page that looks close enough gets it. That binding is the one real
+ * improvement over how the vaults this was modelled on work, and it is not
+ * optional for a login.
+ *
+ * An address is not bound, and scoping it would be security theatre. It is
+ * printed on every parcel the person has ever received and read aloud to every
+ * delivery driver; restricting it to one shop would make the "fill in the
+ * intake paperwork" case impossible without making anything safer. Same for a
+ * phone number.
+ *
+ * A card is the interesting one and is deliberately unbound too: people shop in
+ * places they have not shopped before, and an allowlist would refuse exactly
+ * then. What protects it instead is stronger than a list — the CVC is never
+ * stored, so a number lifted from a page is largely unusable, and anything that
+ * commits money meets the spend gate regardless.
+ *
+ * What is enforced for every kind alike: https only, the session tainted the
+ * moment a value lands, and every capture afterwards masked.
+ *
+ * Derived from the kind rather than stored on the row on purpose. A column
+ * could disagree with the kind; a function cannot.
+ */
+export function originBound(kind: VaultItemKind): boolean {
+  return kind === "login";
+}
+
 export type VaultItemKind = z.infer<typeof vaultItemKindSchema>;
 
 /** An exact https(s) origin: scheme + host + optional port, no path or query. */

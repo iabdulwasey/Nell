@@ -35,7 +35,9 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { AccessScope } from "@nell/shared";
 import type { KeyProvider } from "@nell/vault";
 import type { Pool } from "pg";
+import type { VaultItemKind } from "@nell/vault";
 import { withWorkspace } from "./db.js";
+import { formFor, FORMS, needsOrigin, type VaultKindForm } from "./vault-kinds.js";
 import { saveItem } from "./vault-store.js";
 
 /** Long enough that a link left in a terminal is not a standing key. */
@@ -48,19 +50,48 @@ interface Pending {
   readonly scope: AccessScope;
   /** Prefilled when the agent hit a specific wall. Empty when the user asked. */
   readonly origin: string;
+  /** What is already known, so only the password has to be typed. */
+  readonly username: string;
   readonly expiresAt: number;
 }
+
+/**
+ * What is known about a workspace before the form is drawn.
+ *
+ * A function rather than a value, because it is answered when the link is
+ * opened rather than when it is minted, and because the answer is a database
+ * read that nothing should pay for on a link nobody clicks.
+ *
+ * Only ever a username or email. There is deliberately no way to prefill a
+ * password: the point of this page is that the password is typed here, by a
+ * person, and a field arriving with something already in it is a field people
+ * accept without reading.
+ */
+export type KnownAccount = (scope: AccessScope) => Promise<string | undefined>;
 
 export interface VaultFormOptions {
   readonly pool: Pool;
   readonly keys: KeyProvider;
   readonly port?: number;
   readonly now?: () => number;
+  readonly knownAccount?: KnownAccount;
 }
 
 export interface VaultForm {
-  /** A one-time link for this workspace. `origin` prefills the form. */
-  readonly link: (scope: AccessScope, origin?: string) => string;
+  /**
+   * A one-time link for this workspace.
+   *
+   * `origin` prefills the site. `username` prefills the account, and is passed
+   * when the caller already knows it — which is why the agent supplies neither
+   * itself: the site comes from the live browser session and the account from
+   * what the user has already told us.
+   */
+  readonly link: (
+    scope: AccessScope,
+    origin?: string,
+    username?: string,
+    kind?: VaultItemKind
+  ) => string;
   readonly close: () => Promise<void>;
 }
 
@@ -81,8 +112,12 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
      */
     if (!localHost(request.headers.host)) return plain(response, 403, "Not for you.");
 
-    const token = (request.url ?? "").match(/^\/v\/([A-Za-z0-9_-]{16,128})$/u)?.[1];
+    // Parsed against a fixed base so a malformed URL cannot throw here, and so
+    // the query is read the same way whatever the client sent.
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const token = /^\/v\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname)?.[1];
     const entry = token ? find(pending, token) : undefined;
+    const form = formFor(url.searchParams.get("kind"));
 
     // Expiry swept on the way past rather than on a timer: a link is only
     // interesting when someone is using it, and a stray interval keeps a
@@ -97,22 +132,60 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
       );
     }
 
-    if (request.method === "GET") return page(response, entry.value.origin, "");
+    if (request.method === "GET") {
+      /**
+       * Asked at open time, not at mint time.
+       *
+       * The account is whatever the user has used before, and "before" can
+       * include five minutes ago on a different link. Resolving it here means
+       * the form is never stale, and a link nobody opens costs no query.
+       *
+       * Failure is silent and empty on purpose: an unreachable database should
+       * produce a form with one blank field, not a page that will not load when
+       * somebody is standing there trying to give us a password.
+       */
+      const known =
+        entry.value.username ||
+        (await options.knownAccount?.(entry.value.scope).catch(() => undefined)) ||
+        "";
+      return page(response, {
+        form,
+        token: entry.key,
+        origin: entry.value.origin,
+        values: { username: known },
+        error: "",
+      });
+    }
 
     if (request.method !== "POST") return plain(response, 405, "No.");
 
     const body = await read(request);
     if (body === undefined) return plain(response, 413, "Too much.");
 
-    const form = new URLSearchParams(body);
-    const origin = (form.get("origin") ?? "").trim();
-    const username = (form.get("username") ?? "").trim();
-    const password = form.get("password") ?? "";
-    const totpSecret = (form.get("totp") ?? "").trim();
-    const label = (form.get("label") ?? "").trim() || hostOf(origin) || "Login";
+    const submitted = new URLSearchParams(body);
+    const value = (name: string) => (submitted.get(name) ?? "").trim();
 
-    if (!origin || !username || !password) {
-      return page(response, origin, "A site, a username and a password are all needed.");
+    /**
+     * The site comes from the link where the agent supplied one, and from the
+     * form only when it did not.
+     *
+     * Ordered that way deliberately: a login minted at a sign-in wall is bound
+     * to the page the browser was actually on, and nothing typed into the form
+     * can move it. Someone adding a login out of the blue has no such context
+     * and is asked.
+     */
+    const origin = entry.value.origin || value("origin");
+    const built = form.build(value, origin);
+
+    if (!built.ok) {
+      return page(response, {
+        form,
+        token: entry.key,
+        origin,
+        // What they typed, so a missing postcode does not cost them the rest.
+        values: Object.fromEntries(form.fields.map((f) => [f.name, f.secret ? "" : value(f.name)])),
+        error: built.why,
+      });
     }
 
     /**
@@ -128,26 +201,21 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
     try {
       await withWorkspace(options.pool, entry.value.scope, (client) =>
         saveItem(client, entry.value.scope, options.keys, {
-          kind: "login",
-          label,
-          accountHint: username,
-          origins: [origin],
-          value: JSON.stringify({
-            kind: "login",
-            username,
-            password,
-            ...(totpSecret ? { totpSecret: totpSecret.replaceAll(/\s/gu, "").toUpperCase() } : {}),
-            origins: [origin],
-          }),
+          kind: form.kind,
+          label: built.item.label,
+          ...(built.item.accountHint ? { accountHint: built.item.accountHint } : {}),
+          origins: built.item.origins,
+          value: JSON.stringify(built.item.value),
         })
       );
     } catch (error) {
-      // The message can name the origin or the label. It can never name the
-      // value, and nothing in `saveItem` puts one in an error.
+      // The message can name the site or the label. It can never name the value,
+      // and nothing in `saveItem` puts one in an error.
       return plain(response, 400, error instanceof Error ? error.message : "That did not save.");
     }
 
-    return plain(response, 200, `Saved for ${hostOf(origin) || origin}. You can close this tab.`);
+    const where = hostOf(origin);
+    return plain(response, 200, `Saved${where ? ` for ${where}` : ""}. You can close this tab.`);
   }
 
   const port = options.port ?? Number(process.env["NELL_VAULT_PORT"] ?? 7431);
@@ -159,10 +227,16 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
   });
 
   return {
-    link: (scope, origin) => {
+    link: (scope, origin, username, kind) => {
       const token = randomBytes(32).toString("base64url");
-      pending.set(token, { scope, origin: origin ?? "", expiresAt: now() + LINK_TTL_MS });
-      return `http://127.0.0.1:${String(addressOf(server, port))}/v/${token}`;
+      pending.set(token, {
+        scope,
+        origin: origin ?? "",
+        username: username ?? "",
+        expiresAt: now() + LINK_TTL_MS,
+      });
+      const at = `http://127.0.0.1:${String(addressOf(server, port))}/v/${token}`;
+      return kind && kind !== "login" ? `${at}?kind=${kind}` : at;
     },
     close: () =>
       new Promise<void>((resolve) => {
@@ -256,40 +330,91 @@ function plain(response: ServerResponse, status: number, text: string): void {
  * somebody it was opened, and partly because the whole point of this route is
  * that the bytes go nowhere.
  */
-function page(response: ServerResponse, origin: string, error: string): void {
+function page(
+  response: ServerResponse,
+  view: {
+    readonly form: VaultKindForm;
+    readonly token: string;
+    readonly origin: string;
+    readonly values: Readonly<Record<string, string | undefined>>;
+    readonly error: string;
+  }
+): void {
   response.writeHead(200, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
     "referrer-policy": "no-referrer",
   });
 
+  const { form, origin } = view;
+
+  /**
+   * Four tabs, so the four things a vault holds are visible rather than
+   * remembered. Switching is a GET on the same token, which does not consume it.
+   */
+  const tabs = FORMS.map((other) => {
+    const href = `/v/${view.token}${other.kind === "login" ? "" : `?kind=${other.kind}`}`;
+    return other.kind === form.kind
+      ? `<span class="tab here">${escape(other.section)}</span>`
+      : `<a class="tab" href="${escape(href)}">${escape(other.section)}</a>`;
+  }).join("");
+
+  /**
+   * The site is shown rather than asked for when the agent already knows it.
+   *
+   * That is the difference between three fields and four, and it is also the
+   * safer arrangement: a login minted at a sign-in wall is bound to the page the
+   * browser was actually on, and there is no box in which to change it to
+   * somewhere else.
+   */
+  const site = !needsOrigin(form)
+    ? ""
+    : origin
+      ? `<p class="bound">For <strong>${escape(hostOf(origin) || origin)}</strong></p>`
+      : `<label>Site
+           <input name="origin" placeholder="https://example.com" autocapitalize="off"
+                  spellcheck="false" required>
+         </label>`;
+
+  // The first empty box gets the cursor, so a prefilled form starts where the
+  // typing does.
+  const firstEmpty = form.fields.find((field) => field.secret || !view.values[field.name])?.name;
+
+  const fields = form.fields
+    .map((field) => {
+      /**
+       * A secret field is rendered with no `value` attribute at all, rather than
+       * with an empty one.
+       *
+       * The stronger shape: "there is nothing to prefill a password with" is a
+       * property a reader can check by looking, and a test can assert without
+       * having to reason about whether an empty string counts.
+       */
+      const value = field.secret ? undefined : (view.values[field.name] ?? "");
+      return `<label>${escape(field.label)}${
+        field.hint ? ` <span class="hint">${escape(field.hint)}</span>` : ""
+      }
+        <input name="${escape(field.name)}"${field.secret ? ' type="password"' : ""}
+               ${value === undefined ? "" : `value="${escape(value)}"`}
+               ${field.placeholder ? `placeholder="${escape(field.placeholder)}"` : ""}
+               ${field.required ? "required" : ""}
+               ${field.name === firstEmpty ? "autofocus" : ""}
+               autocapitalize="off" spellcheck="false">
+      </label>`;
+    })
+    .join("");
+
   response.end(
-    shell(`
-      ${error ? `<p class="error">${escape(error)}</p>` : ""}
+    shell(
+      `<nav class="tabs">${tabs}</nav>
+      ${view.error ? `<p class="error">${escape(view.error)}</p>` : ""}
+      ${site}
       <form method="post" autocomplete="off">
-        <label>Site
-          <input name="origin" value="${escape(origin)}" placeholder="https://example.com" required>
-        </label>
-        <label>Username or email
-          <input name="username" autocapitalize="off" spellcheck="false" required>
-        </label>
-        <label>Password
-          <input name="password" type="password" required>
-        </label>
-        <label>Two-factor seed <span class="hint">optional — the long code shown beside a QR</span>
-          <input name="totp" autocapitalize="off" spellcheck="false" placeholder="JBSWY3DPEHPK3PXP">
-        </label>
-        <label>Name it <span class="hint">optional</span>
-          <input name="label" placeholder="Airline">
-        </label>
+        ${fields}
         <button type="submit">Save to vault</button>
       </form>
-      <p class="note">
-        Encrypted before it is written, and tied to the site above — Nell will not
-        offer it anywhere else, whatever a page claims to be. It is typed into a
-        form by the browser and never shown to the model.
-      </p>
-    `)
+      <p class="note">Encrypted before it is written. ${escape(form.note ?? "")}</p>`
+    )
   );
 }
 
@@ -297,11 +422,15 @@ function shell(body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Nell — add a login</title>
+<title>Nell — vault</title>
 <style>
   :root { color-scheme: light dark; }
   body { font: 16px/1.55 system-ui, sans-serif; max-width: 26rem; margin: 3rem auto; padding: 0 1.25rem; }
-  h1 { font-size: 1.15rem; margin: 0 0 1.5rem; }
+  .tabs { display: flex; gap: .15rem; margin: 0 0 1.6rem; flex-wrap: wrap; }
+  .tab { font-size: .8rem; padding: .3rem .6rem; border-radius: .3rem; text-decoration: none;
+         color: inherit; opacity: .5; }
+  .tab.here { opacity: 1; background: color-mix(in srgb, currentColor 12%, transparent); }
+  .bound { font-size: .85rem; margin: 0 0 1.1rem; opacity: .8; }
   label { display: block; margin-bottom: 1rem; font-size: .82rem; letter-spacing: .01em; }
   .hint { opacity: .55; font-weight: 400; }
   input { display: block; width: 100%; margin-top: .35rem; padding: .55rem .6rem; font: inherit;
@@ -311,7 +440,7 @@ function shell(body: string): string {
            background: currentColor; color: Canvas; cursor: pointer; }
   .note { font-size: .8rem; opacity: .62; margin-top: 1.5rem; }
   .error { color: #c0392b; font-size: .85rem; }
-</style></head><body><h1>Nell — add a login</h1>${body}</body></html>`;
+</style></head><body>${body}</body></html>`;
 }
 
 function escape(value: string): string {
