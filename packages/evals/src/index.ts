@@ -27,3 +27,14 @@ export {
   retrievalScenarios,
   transactionalScenarios,
 } from "./scenarios.js";
+
+export {
+  ATTACKS,
+  controlsAreLive,
+  reportAttacks,
+  runAttackSuite,
+  type Attack,
+  type AttackCategory,
+  type AttackResult,
+  type AttackSuiteSummary,
+} from "./attacks.js";
