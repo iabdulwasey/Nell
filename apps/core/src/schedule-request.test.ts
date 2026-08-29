@@ -21,6 +21,33 @@ const failing: ModelProvider = {
 } as unknown as ModelProvider;
 
 describe("spotting a recurring request", () => {
+  /**
+   * The exact message that got missed, plus the spellings around it.
+   *
+   * Every test here originally used "every day" with a space, which is why the
+   * gap survived: `\bevery\b` cannot match inside "everyday", and nothing in
+   * the suite ever wrote it the common way.
+   */
+  it("recognises 'everyday' written as one word", () => {
+    expect(
+      looksRecurring(
+        "Set an alert for 6 am everyday to scan the latest tech/ai news and send them to me"
+      )
+    ).toBe(true);
+    expect(looksRecurring("everyday at 7 give me the weather")).toBe(true);
+  });
+
+  /** People ask for a standing instruction without ever saying a cadence word. */
+  it("recognises the language of a standing instruction", () => {
+    for (const text of [
+      "set an alert for 6am tech news",
+      "remind me at 9 to check the inbox",
+      "notify me when you have the results each morning",
+    ]) {
+      expect(looksRecurring(text), text).toBe(true);
+    }
+  });
+
   it("recognises the ways people ask for something repeated", () => {
     for (const text of [
       "every morning at 6 send me the AI news",

@@ -24,11 +24,27 @@ import { z } from "zod";
 /**
  * Does this message ask for something repeated?
  *
- * Kept tight on purpose. A false positive costs a model call and a confused
- * answer; the words below do not appear by accident in a one-off request.
+ * Two families. The first is cadence — "every", "daily", "hourly". The second is
+ * the language of a standing instruction — "set an alert", "remind me", "notify
+ * me" — which is how people actually phrase this and which carries no cadence
+ * word at all.
+ *
+ * **`everyday` is listed separately, and that omission cost a real request.**
+ * `\bevery\b` cannot match inside "everyday": the `y` is followed by `d`, so
+ * there is no word boundary, and the pattern silently declines. The user wrote
+ * "Set an alert for 6 am everyday to scan the latest tech/ai news" — the exact
+ * feature, in the common spelling — and it was run once as an ordinary task
+ * while the agent explained it could not set up alerts. Every test I wrote used
+ * "every day" with a space.
+ *
+ * Erring wide is cheap here. This gate is a cost optimisation, not a
+ * correctness control: a false positive spends one small structured call, the
+ * model answers `recurring: false`, and the message carries on as a task. A
+ * false negative loses the feature entirely, silently, and looks like the
+ * feature not existing.
  */
 const RECURRENCE =
-  /\b(every|each|daily|nightly|hourly|weekly|recurring|repeatedly|each day|from now on)\b/iu;
+  /\b(everyday|every|each|daily|nightly|hourly|weekly|monthly|recurring|repeatedly|from now on|regularly|alert|remind|notify|schedule)\b/iu;
 
 /** "every time you finish" is about a task, not a clock. */
 const NOT_A_SCHEDULE = /\b(every time|every step|each time|everything|every one|every single)\b/iu;
