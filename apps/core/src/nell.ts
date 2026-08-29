@@ -26,7 +26,8 @@ import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
 import { runLoop, type LoopOutcome } from "./agent-loop.js";
 import { withWorkspace } from "./db.js";
-import { reverseGeocode, resolvePlace } from "./geocode.js";
+import { humanise } from "./failure.js";
+import { resolvePlace, reverseGeocode } from "./geocode.js";
 import { park, peek, unpark } from "./pending-task.js";
 import {
   LOCATION_KEY,
@@ -339,14 +340,18 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
           log(`  ${note}`);
           void reply(note);
         },
+        // Vendor text, for the log only. Nothing here is ever sent.
+        onDiagnostic: (note) => {
+          log(`  ! ${note}`);
+        },
       }
     );
   } catch (error) {
-    outcome = {
-      ok: false,
-      steps: 0,
-      reason: error instanceof Error ? error.message : "Something went wrong.",
-    };
+    // `error.message`, verbatim, whatever it happened to be. Someone who asked
+    // for cinema times should not receive a stack frame.
+    const failure = humanise(error);
+    log(`  ! task failed: ${failure.detail}`);
+    outcome = { ok: false, steps: 0, reason: failure.message, detail: failure.detail };
   }
   // No `finally` closing the browser: the session outlives the task on purpose,
   // because the logins and cookies in it are what make the next task cheaper.
@@ -360,7 +365,21 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
     ]);
   });
 
-  await reply(outcome.ok ? outcome.answer || `Done — ${outcome.summary}` : outcome.reason);
+  // The answer if there is one, and what was done if the task had no answer to
+  // give. Never both: prefixing the result with "Done — I searched three sites"
+  // buries it, and the result is the only part anyone asked for.
+  const said = outcome.ok ? outcome.answer || `Done — ${outcome.summary}` : outcome.reason;
+
+  /**
+   * The reply is logged, not only the steps leading to it.
+   *
+   * Without this the record of a task stopped at its progress notes, so when the
+   * user reported a bad message there was no way to see what had been sent — the
+   * outcome had to be inferred from the steps before it.
+   */
+  if (!outcome.ok) log(`  → ${said.slice(0, 200)}`);
+
+  await reply(said);
   return outcome;
 }
 

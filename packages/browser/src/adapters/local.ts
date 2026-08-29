@@ -167,6 +167,20 @@ export class LocalBrowserProvider implements BrowserProvider {
       userAgent: presentableUserAgent(browser.version()),
       locale: "en-US",
     });
+    /**
+     * Twelve seconds, not thirty.
+     *
+     * Playwright's default means a click on something that is not there costs
+     * half a minute of silence before anything can react — and the loop's
+     * recovery is to look again and try another way, which is worth reaching
+     * quickly. Three attempts now cost less than one used to.
+     *
+     * Navigation keeps the longer budget: a slow site is still loading, and
+     * abandoning it early turns a working page into a failure.
+     */
+    context.setDefaultTimeout(12_000);
+    context.setDefaultNavigationTimeout(30_000);
+
     const page = await context.newPage();
 
     if (options.startUrl) {

@@ -23,6 +23,7 @@
  */
 
 import { explainPlanFailure, planNext, type ModelProvider } from "@nell/agent";
+import { humanise } from "./failure.js";
 import { renderFindings, searchWeb, type SearchProvider } from "@nell/integrations";
 import type { BrowserExecutor } from "@nell/aegis";
 import { detectBlock, explainBlock, type BrowserProvider, type PageSnapshot } from "@nell/browser";
@@ -53,6 +54,8 @@ export interface LoopRequest {
   readonly profile?: string;
   /** Called after each step, so a user can watch rather than wait in silence. */
   readonly onStep?: (note: string) => void;
+  /** Technical detail for the operator's log. Never reaches the user. */
+  readonly onDiagnostic?: (note: string) => void;
 }
 
 /**
@@ -63,6 +66,14 @@ export const MAX_STEPS = 12;
 
 /** Identical pages in a row before concluding the agent is stuck rather than working. */
 export const STUCK_AFTER = 3;
+
+/**
+ * Failed actions in a row before giving up.
+ *
+ * Consecutive, not total: a page that refuses one click and then works is
+ * ordinary, and a task should not carry a grudge from step two into step nine.
+ */
+export const MAX_ACTION_FAILURES = 3;
 
 export type LoopOutcome =
   /**
@@ -83,6 +94,11 @@ export type LoopOutcome =
       readonly steps: number;
       readonly reason: string;
       readonly stuck?: boolean;
+      /**
+       * The technical cause, for the log. Never sent to the user — the whole
+       * point of `reason` is that it is written for a person.
+       */
+      readonly detail?: string;
     };
 
 /**
@@ -116,6 +132,8 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
   const findings: string[] = [];
   /** Repeating a query buys nothing and is billed. */
   const searched = new Set<string>();
+  /** Reset by any step that works, so a wobble mid-task does not count toward a wall. */
+  let consecutiveFailures = 0;
 
   for (let step = 1; step <= limit; step += 1) {
     // A fresh look every time. The previous plan's refs died the moment this
@@ -167,7 +185,15 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     });
 
     if (!planned.ok) {
-      return { ok: false, steps: step, reason: explainPlanFailure(planned.failure) };
+      /**
+       * `explainPlanFailure` interpolates the provider's own words — an API
+       * error body, a rate-limit notice — into a sentence for the user. Useful
+       * in a terminal, meaningless in a chat message, so the vendor's half is
+       * kept for the log and the user gets the classified version.
+       */
+      const failure = humanise(new Error(planned.failure.reason));
+      request.onDiagnostic?.(explainPlanFailure(planned.failure));
+      return { ok: false, steps: step, reason: failure.message, detail: failure.detail };
     }
 
     request.onStep?.(planned.plan.reasoning);
@@ -231,16 +257,24 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     /**
      * A refusal is a value; a broken page is an exception.
      *
-     * The executor returns an outcome when policy says no, but the driver
-     * underneath throws — an element vanished mid-batch, a navigation timed out,
-     * a selector was malformed. Uncaught, that ends the task with a Playwright
-     * stack trace as the user-facing message ("locator.fill: SyntaxError:
-     * Failed to execute 'querySelectorAll'…"), which tells them nothing and
-     * reads like the assistant broke rather than the page did.
+     * The executor returns an outcome when policy says no. The driver underneath
+     * *throws*: an element vanished mid-batch, a click waited thirty seconds for
+     * something that never appeared, a navigation stalled.
      *
-     * Not retried here. A step that failed is a page that is no longer what the
-     * plan assumed, and the next iteration takes a fresh snapshot anyway —
-     * which is the recovery, and a better one than repeating a dead action.
+     * This used to return, ending the task on the first such throw — under a
+     * comment claiming the recovery was "the next iteration takes a fresh
+     * snapshot", which the code then did not do. A single flaky click killed a
+     * task that was one fresh look away from working, and the user got
+     * `locator.click: Timeout 30000ms exceeded` for their trouble.
+     *
+     * Now it *is* the next iteration. The failure is written into history so the
+     * model knows the thing it reached for was not there, and the loop takes a
+     * new snapshot — which is genuinely the right recovery, because a page that
+     * refused an action is a page that has moved.
+     *
+     * Bounded, because a page that fails every action is not going to start
+     * working: a few consecutive failures with no progress in between is a wall,
+     * not a wobble.
      */
     let outcome;
     try {
@@ -248,12 +282,23 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
         kind: "targeted",
         actions: planned.plan.actions,
       });
+      consecutiveFailures = 0;
     } catch (error) {
-      return {
-        ok: false,
-        steps: step,
-        reason: `That step did not work on the page: ${describeError(error)}`,
-      };
+      consecutiveFailures += 1;
+      const failure = humanise(error);
+      request.onDiagnostic?.(`step ${String(step)} failed: ${failure.detail}`);
+
+      if (consecutiveFailures >= MAX_ACTION_FAILURES) {
+        return { ok: false, steps: step, reason: failure.message, detail: failure.detail };
+      }
+
+      // Told plainly, so the model tries something else rather than the same
+      // element again. It cannot see the exception; this is all it gets.
+      history.push(
+        "That last step did not work — the element was not there, or the page moved. " +
+          "Look at the page again and try a different way."
+      );
+      continue;
     }
 
     if (!outcome.ok) {
@@ -269,18 +314,6 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     steps: limit,
     reason: partial ? `${ranOut}\n\nWhat I had so far:\n\n${partial}` : ranOut,
   };
-}
-
-/**
- * The first line of a driver error.
- *
- * Playwright appends a call log — every locator it tried, with timings — which
- * is genuinely useful in a terminal and is noise in a text message. The first
- * line carries what went wrong.
- */
-function describeError(error: unknown): string {
-  if (!(error instanceof Error)) return "something went wrong.";
-  return (error.message.split("\n")[0] ?? error.message).trim();
 }
 
 /**
