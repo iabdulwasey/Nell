@@ -31,7 +31,7 @@ import type {
   InboundEnvelope,
   OutboundMessage,
 } from "./port.js";
-import { render } from "./render.js";
+import { render, toPlainText } from "./render.js";
 
 /**
  * Convert the agent's markdown into the small HTML subset Telegram accepts.
@@ -277,7 +277,28 @@ export class TelegramChannel implements ChannelPort {
         };
       }
 
-      const result = await this.#transport.call("sendMessage", payload);
+      /**
+       * Formatting is a nicety; arriving is not.
+       *
+       * Telegram rejects the *entire* message with a 400 if the HTML is
+       * malformed anywhere in it, and the symptom is not an error the user sees
+       * — it is silence, on a reply they are waiting for. `toTelegramHtml`
+       * escapes carefully, but "carefully" is not "provably", and the cost of
+       * being wrong is the whole message.
+       *
+       * So a rejected send is retried as flattened plain text, which has no
+       * markup left to be malformed. Ugly beats absent.
+       */
+      let result: Record<string, unknown>;
+      try {
+        result = await this.#transport.call("sendMessage", payload);
+      } catch {
+        result = await this.#transport.call("sendMessage", {
+          ...payload,
+          text: toPlainText(text),
+          parse_mode: undefined,
+        });
+      }
       lastId = messageIdOf(result) ?? lastId;
     }
 

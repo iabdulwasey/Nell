@@ -19,12 +19,17 @@ class FakeTransport implements TelegramTransport {
   calls: Call[] = [];
   nextId = 100;
   failCreateTopic = false;
+  /** Rejects any send carrying a parse mode, as Telegram does on bad markup. */
+  rejectFormatted = false;
 
   async call(method: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.calls.push({ method, payload });
     if (method === "createForumTopic") {
       if (this.failCreateTopic) throw new Error("not a forum supergroup");
       return { result: { message_thread_id: 42 } };
+    }
+    if (method === "sendMessage" && this.rejectFormatted && payload["parse_mode"]) {
+      throw new Error("Bad Request: can't parse entities");
     }
     this.nextId += 1;
     return { result: { message_id: this.nextId } };
@@ -342,5 +347,33 @@ describe("markdown becomes Telegram's HTML", () => {
   // Escaping after tagging would escape the tags too: valid, and visibly wrong.
   it("does not escape the tags it just produced", () => {
     expect(toTelegramHtml("**a & b**")).toBe("<b>a &amp; b</b>");
+  });
+});
+
+/**
+ * The failure this guards against is not an error the user sees. Telegram
+ * rejects the *whole* message on malformed HTML, so the reply they are waiting
+ * for simply never arrives, and silence is indistinguishable from the agent
+ * still working.
+ */
+describe("when Telegram rejects the formatting", () => {
+  it("retries as plain text rather than losing the message", async () => {
+    transport.rejectFormatted = true;
+
+    const receipt = await channel.send("chat-1", {
+      text: "**Booked** — table at 8pm",
+    });
+
+    const sends = transport.sent();
+    expect(sends).toHaveLength(2);
+    expect(sends[0]?.payload["parse_mode"]).toBe("HTML");
+
+    // Nothing left in the retry that could be malformed.
+    expect(sends[1]?.payload["parse_mode"]).toBeUndefined();
+    expect(String(sends[1]?.payload["text"])).toContain("Booked");
+    expect(String(sends[1]?.payload["text"])).not.toContain("<b>");
+
+    // And the caller still gets a receipt, because the message did arrive.
+    expect(receipt.providerMessageId).not.toBe("");
   });
 });

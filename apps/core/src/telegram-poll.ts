@@ -20,7 +20,14 @@
  * means it can be read and replied to, and cannot cause a task to run.
  */
 
-import { inboundKey, type InboundEnvelope } from "@nell/channels";
+import {
+  CAPABILITIES,
+  inboundKey,
+  render,
+  toPlainText,
+  toTelegramHtml,
+  type InboundEnvelope,
+} from "@nell/channels";
 import type { Provenance } from "@nell/shared";
 import { z } from "zod";
 
@@ -189,16 +196,71 @@ export interface SendOptions {
   readonly fetchImpl?: typeof fetch;
 }
 
-/** Send a reply. Plain text: the renderer decides formatting, not this. */
+/**
+ * Telegram's limit, minus room for markup.
+ *
+ * The message is split while it is still markdown, so the HTML it becomes is
+ * longer than what was measured — every `&` becomes five characters and every
+ * emphasis span gains tags. Splitting at the real 4096 would let a chunk that
+ * measured legal arrive illegal, and an oversized message is rejected whole.
+ */
+const SPLIT_AT = 3500;
+
+/**
+ * Send a reply, formatted for Telegram.
+ *
+ * This used to send the agent's text verbatim, under a comment saying the
+ * renderer decided formatting — while no renderer was ever applied. The model
+ * writes markdown, because that is the sensible internal format for something
+ * that speaks over five different apps, so what actually arrived was
+ * `**Top Stories:**` and `1. **NASA...**` with the asterisks showing.
+ *
+ * Markdown is kept as the internal representation and converted at the edge.
+ * That is the only arrangement that works across channels: Telegram takes a
+ * small HTML subset, WhatsApp takes its own `*single asterisk*` convention, and
+ * iMessage takes no markup at all — so the agent must not be writing for any one
+ * of them.
+ *
+ * **The fallback is the important part.** Telegram rejects an entire message
+ * with a 400 if the HTML is malformed anywhere in it, and the symptom is not an
+ * error the user sees — it is silence, on a reply they are waiting for. Any
+ * failed chunk is retried as flattened plain text, which cannot be malformed.
+ * Ugly beats absent.
+ */
 export async function sendMessage(options: SendOptions): Promise<boolean> {
   const fetchImpl = options.fetchImpl ?? fetch;
 
+  const chunks = render(
+    { text: options.text },
+    { ...CAPABILITIES["telegram"]!, maxMessageLength: SPLIT_AT }
+  );
+
+  let delivered = true;
+
+  for (const chunk of chunks) {
+    const asHtml = await post(fetchImpl, options, toTelegramHtml(chunk), "HTML");
+    if (asHtml) continue;
+
+    // Formatting is a nicety; arriving is not.
+    delivered = (await post(fetchImpl, options, toPlainText(chunk))) && delivered;
+  }
+
+  return delivered;
+}
+
+async function post(
+  fetchImpl: typeof fetch,
+  options: SendOptions,
+  text: string,
+  parseMode?: "HTML"
+): Promise<boolean> {
   const response = await fetchImpl(`https://api.telegram.org/bot${options.token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       chat_id: options.chatId,
-      text: options.text,
+      text,
+      ...(parseMode ? { parse_mode: parseMode } : {}),
       link_preview_options: { is_disabled: true },
     }),
   });
