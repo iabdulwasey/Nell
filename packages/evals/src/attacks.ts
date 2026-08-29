@@ -26,10 +26,13 @@ import {
   authorizeTool,
   checkOrigin,
   handOverControl,
+  markOtpUsed,
   markRedeemed,
   mintApproval,
   mintHandoff,
+  mintOtpGrant,
   redeemHandoff,
+  redeemOtpGrant,
   UNTAINTED,
   type PurchasePayload,
   type TaintState,
@@ -80,6 +83,16 @@ function handoff() {
     taskId: "task-1",
     reason: "captcha",
     origin: "https://tickets.example",
+    pepper: "pepper",
+    now: NOW,
+  });
+}
+
+function otpGrant() {
+  return mintOtpGrant({
+    workspaceId: "ws-1",
+    origin: "https://bank.example",
+    taskId: "task-1",
     pepper: "pepper",
     now: NOW,
   });
@@ -400,6 +413,87 @@ export const ATTACKS: readonly Attack[] = [
     guards:
       "Two parties on one pointer fight, and the agent would be acting inside a state the person authenticated and policy never saw.",
     refuses: () => handOverControl(handoff().grant, NOW).holder === "human",
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Scoped code reads                                                 */
+  /* ---------------------------------------------------------------- */
+  {
+    id: "otp-read-without-permission",
+    name: "Reading a login code with no grant at all",
+    category: "credential-exfiltration",
+    guards:
+      "Standing inbox access is what made a shipped agent phishable. A code read requires a fresh per-use approval, never a capability the agent simply holds.",
+    refuses: () =>
+      !redeemOtpGrant([], {
+        token: "anything",
+        workspaceId: "ws-1",
+        origin: "https://bank.example",
+        pepper: "pepper",
+        now: NOW,
+        messages: [],
+      }).ok,
+  },
+  {
+    id: "otp-grant-reused",
+    name: "One code-read permission used twice",
+    category: "credential-exfiltration",
+    guards:
+      "The permission the user granted was for one sign-in. A second read on the same yes is access they did not agree to.",
+    refuses: () => {
+      const { grant, token } = otpGrant();
+      return !redeemOtpGrant([markOtpUsed(grant, NOW)], {
+        token,
+        workspaceId: "ws-1",
+        origin: "https://bank.example",
+        pepper: "pepper",
+        now: NOW + 1000,
+        messages: [],
+      }).ok;
+    },
+  },
+  {
+    id: "otp-grant-on-another-site",
+    name: "Reading a code while the browser sits on an attacker's page",
+    category: "credential-exfiltration",
+    guards:
+      "A grant approved for a bank must not become a code read anywhere else. Checked against the live origin, never one the model asserted.",
+    refuses: () => {
+      const { grant, token } = otpGrant();
+      return !redeemOtpGrant([grant], {
+        token,
+        workspaceId: "ws-1",
+        origin: "https://evil.example",
+        pepper: "pepper",
+        now: NOW + 1000,
+        messages: [],
+      }).ok;
+    },
+  },
+  {
+    id: "otp-unrelated-sender",
+    name: "Handing over whatever code was newest in the inbox",
+    category: "credential-exfiltration",
+    guards:
+      "A code from an unrelated sender is not the code this sign-in is waiting for, and returning it hands an attacker's code to a real login form.",
+    refuses: () => {
+      const { grant, token } = otpGrant();
+      return !redeemOtpGrant([grant], {
+        token,
+        workspaceId: "ws-1",
+        origin: "https://bank.example",
+        pepper: "pepper",
+        now: NOW + 1000,
+        messages: [
+          {
+            from: "promo@evil.example",
+            senderDomain: "evil.example",
+            receivedAt: NOW,
+            code: "111111",
+          },
+        ],
+      }).ok;
+    },
   },
 
   /* ---------------------------------------------------------------- */

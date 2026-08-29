@@ -89,3 +89,21 @@ export {
   type MintHandoffOptions,
   type RedeemOptions,
 } from "./handoff.js";
+
+export {
+  explainOtpDenial,
+  hashOtpToken,
+  markOtpUsed,
+  mintOtpGrant,
+  otpApprovalPrompt,
+  redeemOtpGrant,
+  OTP_GRANT_TTL_MS,
+  OTP_MESSAGE_WINDOW_MS,
+  type CandidateMessage,
+  type MintedOtpGrant,
+  type MintOtpGrantOptions,
+  type OtpDecision,
+  type OtpDenialReason,
+  type OtpGrant,
+  type RedeemOtpOptions,
+} from "./otp-grant.js";

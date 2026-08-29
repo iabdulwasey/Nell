@@ -42,3 +42,16 @@ export {
   type VaultItemKind,
   type VaultItemValue,
 } from "./items.js";
+
+export {
+  decodeBase32,
+  parseOtpauthUri,
+  secondsRemaining,
+  totpAt,
+  verifyTotp,
+  DRIFT_STEPS,
+  TOTP_DIGITS,
+  TOTP_PERIOD_SECONDS,
+  type TotpAlgorithm,
+  type TotpConfig,
+} from "./totp.js";
