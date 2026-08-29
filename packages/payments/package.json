@@ -1,24 +1,24 @@
 {
-  "name": "@nell/evals",
+  "name": "@nell/payments",
   "version": "0.0.0",
   "private": true,
   "license": "FSL-1.1-Apache-2.0",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@nell/aegis": "workspace:*",
-    "@nell/browser": "workspace:*",
-    "@nell/payments": "workspace:*",
     "@nell/shared": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
-    "vitest": "4.1.10"
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
   }
 }

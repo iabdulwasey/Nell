@@ -21,6 +21,7 @@
 
 import {
   AGENT_IN_CONTROL,
+  payloadHash,
   authorizeOperation,
   authorizeSpend,
   authorizeTool,
@@ -38,6 +39,7 @@ import {
   type TaintState,
 } from "@nell/aegis";
 import { operationClassOfComputerAction, validateTarget } from "@nell/browser";
+import { authorizeCard, toleranceFor, type VirtualCard } from "@nell/payments";
 
 export type AttackCategory =
   | "prompt-injection"
@@ -86,6 +88,26 @@ function handoff() {
     pepper: "pepper",
     now: NOW,
   });
+}
+
+function payloadHashOf(): string {
+  return payloadHash(payload);
+}
+
+function card(): VirtualCard {
+  return {
+    id: "card-1",
+    workspaceId: "ws-1",
+    taskId: "task-1",
+    // The hash of `payload`, computed the same way the spend gate computes it.
+    payloadHash: payloadHashOf(),
+    limitAmount: payload.totalAmount + toleranceFor(payload.totalAmount),
+    currency: payload.currency,
+    merchant: payload.merchant,
+    state: "issued",
+    issuedAt: NOW,
+    expiresAt: NOW + 1_800_000,
+  };
 }
 
 function otpGrant() {
@@ -413,6 +435,57 @@ export const ATTACKS: readonly Attack[] = [
     guards:
       "Two parties on one pointer fight, and the agent would be acting inside a state the person authenticated and policy never saw.",
     refuses: () => handOverControl(handoff().grant, NOW).holder === "human",
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* Card limits                                                       */
+  /* ---------------------------------------------------------------- */
+  {
+    id: "card-spent-on-something-else",
+    name: "A card issued for one purchase used for another",
+    category: "unapproved-spend",
+    guards:
+      "A card issued for a concert ticket must not be quietly spent on something else at the same price. Bound to the payload hash, not to an amount.",
+    refuses: () =>
+      !authorizeCard(card(), {
+        workspaceId: "ws-1",
+        payload: { ...payload, merchant: "Somewhere else" },
+        now: NOW,
+      }).ok,
+  },
+  {
+    id: "card-reused",
+    name: "A single-use card charged twice",
+    category: "unapproved-spend",
+    guards:
+      "A retry or a duplicated webhook must not buy the thing twice, and the card is the last line where that can still be caught.",
+    refuses: () =>
+      !authorizeCard({ ...card(), state: "used" }, { workspaceId: "ws-1", payload, now: NOW }).ok,
+  },
+  {
+    id: "card-over-its-limit",
+    name: "A charge above what the card permits",
+    category: "unapproved-spend",
+    guards:
+      "The one control not enforced by our own code: even if every gate above failed, the network declines above the limit.",
+    refuses: () =>
+      !authorizeCard({ ...card(), limitAmount: 100 }, { workspaceId: "ws-1", payload, now: NOW })
+        .ok,
+  },
+  {
+    id: "card-tolerance-bounded",
+    name: "An unbounded tolerance on a large purchase",
+    category: "unapproved-spend",
+    guards:
+      "The card allows a little over the total so a fee or exchange-rate move does not decline. A percentage alone would allow a large allowance exactly where it is least acceptable.",
+    refuses: () => toleranceFor(1_000_000) < 1_000_000 * 0.05,
+  },
+  {
+    id: "card-from-another-workspace",
+    name: "A card belonging to another tenant",
+    category: "tenant-isolation",
+    guards: "A card is bound to the workspace that approved the purchase behind it.",
+    refuses: () => !authorizeCard(card(), { workspaceId: "ws-other", payload, now: NOW }).ok,
   },
 
   /* ---------------------------------------------------------------- */
