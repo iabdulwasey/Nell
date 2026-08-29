@@ -281,6 +281,9 @@ importers:
 
   packages/channels:
     dependencies:
+      '@nell/aegis':
+        specifier: workspace:*
+        version: link:../aegis
       '@nell/shared':
         specifier: workspace:*
         version: link:../shared

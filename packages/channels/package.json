@@ -11,6 +11,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@nell/aegis": "workspace:*",
     "@nell/shared": "workspace:*",
     "zod": "4.4.3"
   },
