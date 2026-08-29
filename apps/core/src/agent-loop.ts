@@ -23,6 +23,7 @@
  */
 
 import { explainPlanFailure, planNext, type ModelProvider } from "@nell/agent";
+import { renderFindings, searchWeb, type SearchProvider } from "@nell/integrations";
 import type { BrowserExecutor } from "@nell/aegis";
 import type { BrowserProvider, PageSnapshot } from "@nell/browser";
 import type { AccessScope } from "@nell/shared";
@@ -32,6 +33,11 @@ export interface LoopDeps {
   readonly executor: BrowserExecutor;
   readonly model: ModelProvider;
   readonly modelId: string;
+  /**
+   * Optional. Without one the agent still works — it just has to reach pages by
+   * navigating, which is what search engines block.
+   */
+  readonly search?: SearchProvider;
 }
 
 export interface LoopRequest {
@@ -92,6 +98,18 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
    * away work the user already paid for.
    */
   let partial = "";
+  /**
+   * Search results, kept apart from `history`.
+   *
+   * `history` is what the agent has tried; this is third-party text it has been
+   * shown. Merging them would file attacker-authored snippets under the agent's
+   * own account of its work, which is exactly the confusion the provenance
+   * model exists to prevent — and the planner labels them differently for the
+   * same reason.
+   */
+  const findings: string[] = [];
+  /** Repeating a query buys nothing and is billed. */
+  const searched = new Set<string>();
 
   for (let step = 1; step <= limit; step += 1) {
     // A fresh look every time. The previous plan's refs died the moment this
@@ -117,6 +135,7 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
       objective: request.objective,
       snapshot,
       history,
+      findings,
     });
 
     if (!planned.ok) {
@@ -126,6 +145,42 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     request.onStep?.(planned.plan.reasoning);
     history.push(planned.plan.reasoning);
     if (planned.plan.answer.trim()) partial = planned.plan.answer.trim();
+
+    /**
+     * Search before acting, and hand the results to the next turn as context.
+     *
+     * They arrive as `untrusted` from `searchWeb`, which is not a formality:
+     * search snippets are attacker-authored text reachable by anyone willing to
+     * do SEO, and this is the same injection surface as email. The provenance
+     * gate governs what a turn holding them may go on to do; here they are
+     * simply what the planner reads next.
+     *
+     * A failed search is context, not an ending. Vendors rate-limit, and an
+     * agent told "search failed" can still navigate somewhere sensible — which
+     * is strictly better than killing a task that was three steps from done.
+     */
+    if (planned.plan.search && deps.search && !searched.has(planned.plan.search)) {
+      searched.add(planned.plan.search);
+      findings.push(
+        renderFindings(await searchWeb({ query: planned.plan.search }, { provider: deps.search }))
+      );
+      request.onStep?.(`Searching for "${planned.plan.search}".`);
+
+      /**
+       * Re-plan rather than run this turn's actions.
+       *
+       * Those actions were chosen before the results existed, so running them is
+       * the same stale-plan hazard the fresh snapshot above exists to prevent —
+       * just with the model's own assumptions rather than the page's.
+       *
+       * The fingerprint is cleared with it: the page has not changed, but the
+       * agent knows something it did not, and letting the stuck detector count
+       * that as a wasted turn would abort a task that is making progress.
+       */
+      unchanged = 0;
+      previousFingerprint = "";
+      continue;
+    }
 
     if (planned.plan.done) {
       return {
@@ -145,10 +200,33 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
       };
     }
 
-    const outcome = await deps.executor.execute(request.scope, request.sessionId, {
-      kind: "targeted",
-      actions: planned.plan.actions,
-    });
+    /**
+     * A refusal is a value; a broken page is an exception.
+     *
+     * The executor returns an outcome when policy says no, but the driver
+     * underneath throws — an element vanished mid-batch, a navigation timed out,
+     * a selector was malformed. Uncaught, that ends the task with a Playwright
+     * stack trace as the user-facing message ("locator.fill: SyntaxError:
+     * Failed to execute 'querySelectorAll'…"), which tells them nothing and
+     * reads like the assistant broke rather than the page did.
+     *
+     * Not retried here. A step that failed is a page that is no longer what the
+     * plan assumed, and the next iteration takes a fresh snapshot anyway —
+     * which is the recovery, and a better one than repeating a dead action.
+     */
+    let outcome;
+    try {
+      outcome = await deps.executor.execute(request.scope, request.sessionId, {
+        kind: "targeted",
+        actions: planned.plan.actions,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        steps: step,
+        reason: `That step did not work on the page: ${describeError(error)}`,
+      };
+    }
 
     if (!outcome.ok) {
       // A refusal is the policy engine working, and it is the user's business.
@@ -163,6 +241,18 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     steps: limit,
     reason: partial ? `${ranOut}\n\nWhat I had so far:\n\n${partial}` : ranOut,
   };
+}
+
+/**
+ * The first line of a driver error.
+ *
+ * Playwright appends a call log — every locator it tried, with timings — which
+ * is genuinely useful in a terminal and is noise in a text message. The first
+ * line carries what went wrong.
+ */
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return "something went wrong.";
+  return (error.message.split("\n")[0] ?? error.message).trim();
 }
 
 /**

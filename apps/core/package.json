@@ -21,6 +21,7 @@
     "@nell/channels": "workspace:*",
     "@nell/db": "workspace:*",
     "@nell/durable": "workspace:*",
+    "@nell/integrations": "workspace:*",
     "@nell/license": "workspace:*",
     "@nell/memory": "workspace:*",
     "@nell/shared": "workspace:*",

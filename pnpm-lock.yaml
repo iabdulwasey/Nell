@@ -50,6 +50,9 @@ importers:
       '@nell/durable':
         specifier: workspace:*
         version: link:../../packages/durable
+      '@nell/integrations':
+        specifier: workspace:*
+        version: link:../../packages/integrations
       '@nell/license':
         specifier: workspace:*
         version: link:../../packages/license

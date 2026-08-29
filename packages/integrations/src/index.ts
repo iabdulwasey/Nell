@@ -36,6 +36,11 @@ export {
   type SearchQuery,
   type SearchResult,
 } from "./search.js";
+export {
+  anthropicSearchProvider,
+  DEFAULT_SEARCH_MODEL,
+  type AnthropicSearchOptions,
+} from "./anthropic-search.js";
 
 export {
   asRawContent,

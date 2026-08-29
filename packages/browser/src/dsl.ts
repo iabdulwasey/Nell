@@ -40,7 +40,29 @@ export const targetSchema = z.union([
    * CSS is the escape hatch. Bounded in length, and never a substitute for code
    * execution: it selects an element, it does not run anything.
    */
-  z.object({ by: z.literal("css"), selector: z.string().min(1).max(500) }),
+  z.object({
+    by: z.literal("css"),
+    selector: z
+      .string()
+      .min(1)
+      .max(500)
+      /**
+       * A snapshot ref is not a CSS selector.
+       *
+       * Refs look like `1:e3`, and page listings used to render them bracketed,
+       * so a model would send `{by: "css", selector: "[1:e3]"}` — which Chromium
+       * rejects as invalid CSS, ending the task with a `querySelectorAll`
+       * SyntaxError from deep inside Playwright. Caught here instead, with a
+       * sentence naming the right addressing mode, because the model can act on
+       * that and cannot act on a parser error.
+       *
+       * The listing no longer invites the mistake; this stays because the cost
+       * of the check is nothing and the cost of the confusion was a whole task.
+       */
+      .refine((selector) => !/^\[?\d+:e\d+\]?$/u.test(selector.trim()), {
+        message: 'That is a snapshot ref, not a CSS selector — use {"by":"ref","ref":"..."}.',
+      }),
+  }),
 ]);
 
 export type Target = z.infer<typeof targetSchema>;

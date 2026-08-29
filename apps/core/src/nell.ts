@@ -8,7 +8,7 @@
  *   a stranger is answered but cannot cause work
  *   a known user's message becomes a persisted task
  *   the agent looks, plans, acts through the policy chokepoint, looks again
- *   the browser is closed whether it worked or not
+ *   the workspace's browser stays open, because its logins are the asset
  *   the outcome is written down and reported back
  *
  * Deliberately a loop over one task at a time. Concurrency here would be easy to
@@ -20,6 +20,7 @@
 import { BrowserExecutor } from "@nell/aegis";
 import { isBareReply, providerFor, type ProviderKeys } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
+import type { SearchProvider } from "@nell/integrations";
 import { greeting } from "@nell/memory";
 import { accessScopeForUser } from "@nell/shared";
 import type { Pool } from "pg";
@@ -33,6 +34,12 @@ export interface NellOptions {
   readonly browser: BrowserProvider;
   /** The workspace's long-lived browser. Outlives any one task, by design. */
   readonly sessions: WorkspaceSessions;
+  /**
+   * Optional. Without it the agent must reach every page by navigating, and
+   * search engines serve automated browsers a captcha — so research tasks fail
+   * on the way to the results rather than on the results.
+   */
+  readonly search?: SearchProvider;
   readonly keys: ProviderKeys;
   readonly modelId: string;
   readonly telegramToken: string;
@@ -137,6 +144,7 @@ export async function handleMessage(
         executor: new BrowserExecutor({ driver: options.browser }),
         model: resolved.provider,
         modelId: options.modelId,
+        ...(options.search ? { search: options.search } : {}),
       },
       {
         scope,

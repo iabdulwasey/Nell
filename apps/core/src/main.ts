@@ -8,6 +8,7 @@
 
 import { LocalBrowserProvider } from "@nell/browser/adapters";
 import { keysFromEnv } from "@nell/agent";
+import { anthropicSearchProvider } from "@nell/integrations";
 import { assertRlsEnforceable, createPool } from "./db.js";
 import { run } from "./nell.js";
 import { WorkspaceSessions } from "./workspace-session.js";
@@ -42,6 +43,17 @@ await assertRlsEnforceable(pool);
 const browser = new LocalBrowserProvider({ headless: process.env["NELL_HEADED"] !== "1" });
 const sessions = new WorkspaceSessions({ provider: browser, startUrl });
 
+/**
+ * A search vendor, not a model choice.
+ *
+ * Reachable with an Anthropic key in the same way Brave's is reachable with a
+ * Brave key, and independent of `NELL_MODEL` — a workspace driving its agent
+ * with DeepSeek or a local model still searches through this. Absent, the agent
+ * still works and simply cannot get past a search engine's captcha.
+ */
+const anthropicKey = process.env["ANTHROPIC_API_KEY"];
+const search = anthropicKey ? anthropicSearchProvider({ apiKey: anthropicKey }) : undefined;
+
 const controller = new AbortController();
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
@@ -62,6 +74,7 @@ await run(
     telegramToken: token!,
     knownSenders: new Map([[owner!, `tg-${owner!}`]]),
     sessions,
+    ...(search ? { search } : {}),
     log: (line) => {
       console.log(line);
     },
