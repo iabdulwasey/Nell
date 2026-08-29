@@ -131,3 +131,28 @@ export {
   type WriteDecision,
   type WriteRefusal,
 } from "./calendar.js";
+
+export {
+  asReading,
+  checkWorkspaceWrite,
+  describeTarget,
+  fromGitHub,
+  fromLinear,
+  fromNotion,
+  fromSlack,
+  renderItems,
+  reviewScopes,
+  workspaceServiceSchema,
+  MAX_BODY_LENGTH,
+  MAX_ITEMS,
+  REQUIRED_SCOPES,
+  type ItemKind,
+  type ScopeReview,
+  type WorkspaceItem,
+  type WorkspaceReading,
+  type WorkspaceService,
+  type WorkspaceWriteDecision,
+  type WriteContext,
+  type WriteRequest,
+  type WriteTarget,
+} from "./workspace.js";
