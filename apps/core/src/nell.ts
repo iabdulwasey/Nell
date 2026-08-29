@@ -44,7 +44,7 @@ import { withWorkspace } from "./db.js";
 import { answerAboutFiles, fetchAttachment, readableKind, type StoredFile } from "./documents.js";
 import { humanise } from "./failure.js";
 import { resolvePlace, reverseGeocode } from "./geocode.js";
-import { park, peek, unpark } from "./pending-task.js";
+import { abandon, park, peek, unpark } from "./pending-task.js";
 import {
   LOCATION_KEY,
   locationOf,
@@ -415,9 +415,12 @@ export async function handleMessage(
     /**
      * A yes to a payment resumes the task rather than starting a new one.
      *
-     * The approval itself was granted before this ran — it has to be in place
-     * before the click is retried, or the very turn it was approved for would
-     * be refused again.
+     * Kept ahead of the general path and deliberately narrow: an approval is
+     * the one place where reading "sure, but check the date first" as consent
+     * would be unrecoverable, so it is decided by a regexp rather than by a
+     * model. The approval itself was granted before this ran — it has to be in
+     * place before the click is retried, or the very turn it was approved for
+     * would be refused again.
      */
     if (affirmative(objective)) {
       return resumeParked(options, message, scope, resolved.provider, live);
@@ -482,6 +485,9 @@ export async function handleMessage(
           id: taskId,
           objective,
           threadRef: message.envelope.threadRef,
+          // Recorded verbatim, so the next message is judged against what was
+          // actually asked rather than against a guess at what it might be.
+          question: "Where are you? A city is enough — or send your location.",
         })
       );
       await reply("Where are you? A city is enough — or send your location and I'll remember it.");
@@ -496,6 +502,15 @@ export async function handleMessage(
     threadRef: message.envelope.threadRef,
     model: resolved.provider,
     live,
+    ...(parked
+      ? {
+          pending: {
+            id: parked.id,
+            objective: parked.objective,
+            ...(parked.question ? { question: parked.question } : {}),
+          },
+        }
+      : {}),
   });
 }
 
@@ -506,6 +521,19 @@ interface TaskRun {
   readonly threadRef: string;
   readonly model: ModelProvider;
   readonly live?: Live;
+  /**
+   * A task waiting on an answer, which this message may or may not be.
+   *
+   * Handed in rather than looked up here so the decision — resume it, or
+   * abandon it and start something new — is made in one place, by the
+   * dispatcher, which is the only thing that has read both the question and the
+   * message.
+   */
+  readonly pending?: {
+    readonly id: string;
+    readonly objective: string;
+    readonly question?: string;
+  };
 }
 
 /**
@@ -633,6 +661,8 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
    * task that dies before planning still records something true.
    */
   let resolved = run.objective;
+  /** Set when this message answered a pending question, so nothing is duplicated. */
+  let resuming: string | undefined;
   const produced: { readonly path: string; readonly name: string }[] = [];
 
   try {
@@ -663,6 +693,32 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
     });
 
     resolved = plan.objective;
+
+    /**
+     * The message answered the question, so the task that asked it carries on.
+     *
+     * Two things change and both matter. The work is the *original* objective
+     * enriched by the answer rather than the answer alone — "Heathrow" is not a
+     * task. And no second row or ledger entry is created, so one goal that took
+     * three messages reads as one thing done rather than three.
+     */
+    if (run.pending && plan.answersPendingQuestion) {
+      resuming = run.pending.id;
+      await withWorkspace(options.pool, run.scope, (client) =>
+        unpark(client, run.scope, run.pending!.id)
+      );
+      log(`  resuming: ${run.pending.objective.slice(0, 60)}`);
+    } else if (run.pending) {
+      /**
+       * They went somewhere else, so the old task is abandoned rather than left
+       * blocked for ever. `abandoned`, not `failed`: nobody said stop and
+       * nothing broke, they simply moved on — and recording a fault nobody
+       * committed makes the history worse than silence.
+       */
+      await withWorkspace(options.pool, run.scope, (client) =>
+        abandon(client, run.scope, run.pending!.id)
+      ).catch(() => undefined);
+    }
 
     const missing = unsupported(plan.steps, options.capabilities);
     if (missing.length > 0) {
@@ -708,6 +764,13 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
          * "Book the second one" reaches here as "book Emirates EK517, 8:40pm,
          * 3 September to Delhi" — the dispatcher spelled it out from the
          * conversation, so the worker needs no history of its own.
+         */
+        /**
+         * When resuming, the goal — not the answer to the question.
+         *
+         * "Heathrow" is not a task. The dispatcher has already folded the
+         * answer into `objective`, so this is the original request with the
+         * missing piece filled in rather than a fragment of a conversation.
          */
         objective: plan.objective,
         files,
@@ -785,13 +848,24 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
    * same way next week, and a history of only successes is a history that
    * teaches nothing.
    */
-  await withWorkspace(options.pool, run.scope, (client) =>
-    recordOutcome(client, run.scope, {
-      taskId: run.taskId,
-      objective: resolved,
-      outcome: outcome.ok ? "succeeded" : outcome.needsApproval ? "blocked-on-user" : "failed",
-    })
-  ).catch(() => undefined);
+  /**
+   * One entry per goal, written when the goal ends — not one per message.
+   *
+   * A task that stops to ask something has not finished, so it gets no entry
+   * yet: the `tasks` row already records that it is blocked, and writing a
+   * ledger line here would mean a single booking that took three messages read
+   * back as three separate things done. The entry lands when the task actually
+   * concludes, carrying the objective the dispatcher resolved.
+   */
+  if (outcome.ok || !outcome.needsApproval) {
+    await withWorkspace(options.pool, run.scope, (client) =>
+      recordOutcome(client, run.scope, {
+        taskId: resuming ?? run.taskId,
+        objective: resolved,
+        outcome: outcome.ok ? "succeeded" : "failed",
+      })
+    ).catch(() => undefined);
+  }
 
   // The answer if there is one, and what was done if the task had no answer to
   // give. Never both: prefixing the result with "Done — I searched three sites"
@@ -807,8 +881,10 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
     await withWorkspace(options.pool, run.scope, (client) =>
       park(client, run.scope, {
         id: run.taskId,
-        objective: run.objective,
+        // The goal, not the question — this is what resumes and gets worked on.
+        objective: resolved,
         threadRef: run.threadRef,
+        question: outcome.reason,
       })
     );
     run.live?.onApprovalNeeded?.(labelIn(outcome.reason), sessionId ?? "");

@@ -95,6 +95,16 @@ export const tasks = pgTable(
     label: text("label").notNull(),
     emoji: text("emoji"),
     status: text("status").notNull().default("queued"),
+    /**
+     * The question this task stopped on, when it is `blocked-on-user`.
+     *
+     * Recorded because "is this message an answer or a new request?" cannot be
+     * decided without knowing what was asked. Without it the only answers that
+     * could resume a task were the two the code special-cased — a yes to a
+     * payment, and a place name — so every other question turned the user's
+     * reply into a brand new task and stranded the original for ever.
+     */
+    blockedOn: text("blocked_on"),
     /** Durable workflow handle; also the continuation key for follow-ups. */
     workflowId: text("workflow_id"),
     browserSessionId: text("browser_session_id"),

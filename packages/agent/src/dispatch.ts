@@ -91,6 +91,13 @@ export interface Dispatch {
    * when a rewrite happened.
    */
   readonly objective: string;
+  /**
+   * The message answers the question Nell was waiting on, so the task that
+   * asked it should resume rather than a new one starting.
+   *
+   * Always false when nothing was pending — there is nothing to answer.
+   */
+  readonly answersPendingQuestion: boolean;
 }
 
 /**
@@ -132,6 +139,22 @@ const dispatchSchema = {
         "spelled out — names, numbers, dates, prices. If it already stands alone, repeat it " +
         "unchanged. Never invent a detail that was not said.",
     },
+    /**
+     * Whether this message answers the question Nell is waiting on.
+     *
+     * Only meaningful when one was asked, and the schema says so — a model told
+     * to judge against nothing will invent a judgement. Two special cases used
+     * to stand in for this: a yes to a payment and a place name. Every other
+     * question turned the user's reply into a new task and stranded the
+     * original, which is the "to and fro" problem exactly.
+     */
+    answersPendingQuestion: {
+      type: "boolean",
+      description:
+        "True only when a pending question is quoted below and this message answers it. " +
+        "False when it changes the subject or asks for something else — including when it " +
+        "is related but is plainly a new request rather than a reply.",
+    },
     steps: {
       type: "array",
       minItems: 1,
@@ -162,12 +185,13 @@ const dispatchSchema = {
       },
     },
   },
-  required: ["summary", "objective", "steps"],
+  required: ["summary", "objective", "answersPendingQuestion", "steps"],
 };
 
 const parsed = z.object({
   summary: z.string().max(200).default(""),
   objective: z.string().max(2000).default(""),
+  answersPendingQuestion: z.boolean().default(false),
   steps: z
     .array(
       z.object({
@@ -203,6 +227,13 @@ export interface DispatchRequest {
    * Ignored, and kept only so an existing caller does not break.
    */
   readonly today?: string;
+  /**
+   * The question Nell is waiting on, when a task is parked.
+   *
+   * Absent when nothing is pending, which is the common case — and its absence
+   * is why `answersPendingQuestion` can be answered honestly rather than guessed.
+   */
+  readonly pendingQuestion?: string;
   readonly timeoutMs?: number;
 }
 
@@ -229,6 +260,7 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
     return {
       summary: "Reading what you sent.",
       objective: request.message,
+      answersPendingQuestion: false,
       steps: [{ capability: "assist", instruction: request.message }],
     };
   }
@@ -249,6 +281,17 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
       "Use one step unless the job genuinely needs a different capability part-way —",
       "generating pictures then packaging them, or browsing for something then writing it",
       "up. Steps run in order and feed each other.",
+      "",
+      request.pendingQuestion
+        ? [
+            "",
+            "You are waiting on an answer to this question:",
+            `  "${request.pendingQuestion}"`,
+            "",
+            "Set answersPendingQuestion=true if this message replies to it — a name, a date,",
+            "a choice, a yes or a no. Set it false if they have moved on to something else.",
+          ].join("\n")
+        : "",
       "",
       "A message is often a follow-up: 'book the second one', 'what about Thursday', 'no,",
       "the earlier flight'. Read what was said before and write `objective` so it stands on",
@@ -282,6 +325,10 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
     // Falling back to the raw message rather than to an empty string: a model
     // that skips the field must not erase the request.
     objective: result.data.objective.trim() || request.message,
+    // Never true when nothing was asked: a model that answers a question it was
+    // not shown is guessing, and the cost of that guess is resuming a task the
+    // user had moved on from.
+    answersPendingQuestion: Boolean(request.pendingQuestion) && result.data.answersPendingQuestion,
     steps: result.data.steps,
   };
 }
@@ -291,6 +338,7 @@ function fallback(message: string): Dispatch {
   return {
     summary: "Having a look.",
     objective: message,
+    answersPendingQuestion: false,
     steps: [
       {
         capability: OBVIOUSLY_BROWSING.test(message) ? "browse" : "assist",

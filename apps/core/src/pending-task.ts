@@ -26,6 +26,15 @@ export interface PendingTask {
   /** The objective to resume, verbatim. */
   readonly objective: string;
   readonly threadRef: string | undefined;
+  /**
+   * What Nell asked, so the next message can be judged against it.
+   *
+   * Without this only two answers could ever resume a task — a yes to a payment
+   * and a place name — because those were the only two questions the code knew
+   * how to recognise. Every other question turned the reply into a new task and
+   * left the original blocked for ever.
+   */
+  readonly question: string | undefined;
 }
 
 /**
@@ -39,7 +48,13 @@ export interface PendingTask {
 export async function park(
   client: PoolClient,
   scope: AccessScope,
-  input: { readonly id: string; readonly objective: string; readonly threadRef: string }
+  input: {
+    readonly id: string;
+    readonly objective: string;
+    readonly threadRef: string;
+    /** What was asked. Judged against the next message to decide if it answers. */
+    readonly question?: string;
+  }
 ): Promise<void> {
   // A second question replaces the first rather than queueing behind it.
   await client.query(
@@ -49,11 +64,39 @@ export async function park(
   );
 
   await client.query(
-    `INSERT INTO tasks (id, workspace_id, label, status, channel_thread_ref, updated_at)
-     VALUES ($1, $2, $3, 'blocked-on-user', $4, now())
-     ON CONFLICT (id) DO UPDATE SET status = 'blocked-on-user', updated_at = now()`,
-    [input.id, scope.workspaceId, input.objective.slice(0, 120), input.threadRef]
+    `INSERT INTO tasks (id, workspace_id, label, status, channel_thread_ref, blocked_on, updated_at)
+     VALUES ($1, $2, $3, 'blocked-on-user', $4, $5, now())
+     ON CONFLICT (id) DO UPDATE
+       SET status = 'blocked-on-user', blocked_on = EXCLUDED.blocked_on, updated_at = now()`,
+    [
+      input.id,
+      scope.workspaceId,
+      input.objective.slice(0, 120),
+      input.threadRef,
+      input.question?.slice(0, 500) ?? null,
+    ]
   );
+}
+
+/**
+ * Give up on the parked task because the user went somewhere else.
+ *
+ * `abandoned`, not `cancelled` and not `failed`. Nobody said stop and nothing
+ * broke — they asked about something else and never came back to this, which is
+ * an ordinary thing people do and deserves its own word. Reporting it as failed
+ * would put a fault in the record that nobody committed.
+ */
+export async function abandon(
+  client: PoolClient,
+  scope: AccessScope,
+  id: string
+): Promise<boolean> {
+  const { rowCount } = await client.query(
+    `UPDATE tasks SET status = 'abandoned', updated_at = now()
+      WHERE workspace_id = $1 AND id = $2 AND status = 'blocked-on-user'`,
+    [scope.workspaceId, id]
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 /** What is waiting, if anything. Does not clear it — the answer might not arrive. */
@@ -65,8 +108,9 @@ export async function peek(
     id: string;
     label: string;
     channel_thread_ref: string | null;
+    blocked_on: string | null;
   }>(
-    `SELECT id, label, channel_thread_ref FROM tasks
+    `SELECT id, label, channel_thread_ref, blocked_on FROM tasks
       WHERE workspace_id = $1 AND status = 'blocked-on-user'
       ORDER BY updated_at DESC LIMIT 1`,
     [scope.workspaceId]
@@ -74,7 +118,12 @@ export async function peek(
 
   const row = rows[0];
   return row
-    ? { id: row.id, objective: row.label, threadRef: row.channel_thread_ref ?? undefined }
+    ? {
+        id: row.id,
+        objective: row.label,
+        threadRef: row.channel_thread_ref ?? undefined,
+        question: row.blocked_on ?? undefined,
+      }
     : undefined;
 }
 
