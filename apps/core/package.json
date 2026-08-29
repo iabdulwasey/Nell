@@ -9,8 +9,10 @@
     "build": "echo \"no build yet\" && exit 0",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "start": "tsx src/index.ts"
+    "test": "vitest run --exclude '**/*.live.test.ts' --passWithNoTests",
+    "start": "tsx src/index.ts",
+    "nell": "node --experimental-strip-types src/main.ts",
+    "test:live": "RUN_LIVE_MODEL_TESTS=1 vitest run src/nell.live.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "1.15.0",

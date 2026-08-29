@@ -1,0 +1,180 @@
+/**
+ * Nell, running.
+ *
+ * Reads Telegram, runs a task, replies. Every guarantee the rest of this
+ * repository establishes has to survive being assembled here, so the ordering
+ * below is the substance rather than plumbing:
+ *
+ *   a stranger is answered but cannot cause work
+ *   a known user's message becomes a persisted task
+ *   the agent looks, plans, acts through the policy chokepoint, looks again
+ *   the browser is closed whether it worked or not
+ *   the outcome is written down and reported back
+ *
+ * Deliberately a loop over one task at a time. Concurrency here would be easy to
+ * add and would immediately need answers about which task owns the machine — and
+ * the persistent-machine design says one workspace has one, so serialising is
+ * the honest shape rather than a limitation to remove later.
+ */
+
+import { BrowserExecutor } from "@nell/aegis";
+import { providerFor, type ProviderKeys } from "@nell/agent";
+import type { BrowserProvider } from "@nell/browser";
+import { accessScopeForUser } from "@nell/shared";
+import type { Pool } from "pg";
+import { runLoop, type LoopOutcome } from "./agent-loop.js";
+import { withWorkspace } from "./db.js";
+import { pollOnce, replyToStranger, sendMessage, type InboundMessage } from "./telegram-poll.js";
+
+export interface NellOptions {
+  readonly pool: Pool;
+  readonly browser: BrowserProvider;
+  readonly keys: ProviderKeys;
+  readonly modelId: string;
+  readonly telegramToken: string;
+  /** Telegram sender id → user id. Everyone else is a stranger. */
+  readonly knownSenders: ReadonlyMap<string, string>;
+  /** Where a task starts. A real deployment would let the agent search first. */
+  readonly startUrl: string;
+  readonly log?: (line: string) => void;
+}
+
+/**
+ * Handle one message.
+ *
+ * Exported separately from the polling loop so it can be tested without a
+ * network: the interesting behaviour is what happens to a message, not how it
+ * arrived.
+ */
+export async function handleMessage(
+  options: NellOptions,
+  message: InboundMessage
+): Promise<LoopOutcome | undefined> {
+  const log = options.log ?? (() => undefined);
+  const reply = (text: string) =>
+    sendMessage({ token: options.telegramToken, chatId: message.envelope.threadRef, text });
+
+  // Answered, and given nothing. Silence from a bot that is plainly online reads
+  // as broken and invites retrying.
+  if (message.provenance !== "user" || !message.userId) {
+    log(`stranger ${message.envelope.senderRef}: ${message.envelope.text.slice(0, 60)}`);
+    await reply(replyToStranger());
+    return undefined;
+  }
+
+  const scope = accessScopeForUser(message.userId);
+  const objective = message.envelope.text.trim();
+  const taskId = message.idempotencyKey;
+
+  const resolved = providerFor(options.modelId, options.keys);
+  if (!resolved.ok) {
+    await reply("I have no model configured, so I cannot do anything yet.");
+    return undefined;
+  }
+
+  await withWorkspace(options.pool, scope, async (client) => {
+    await client.query(`INSERT INTO workspaces (id) VALUES ($1) ON CONFLICT DO NOTHING`, [
+      scope.workspaceId,
+    ]);
+  }).catch(() => undefined);
+
+  await withWorkspace(options.pool, scope, async (client) => {
+    await client.query(
+      `INSERT INTO tasks (id, workspace_id, label, status, channel_thread_ref, updated_at)
+       VALUES ($1, $2, $3, 'running', $4, now())
+       ON CONFLICT (id) DO UPDATE SET status = 'running', updated_at = now()`,
+      [taskId, scope.workspaceId, objective.slice(0, 120), message.envelope.threadRef]
+    );
+  });
+
+  await reply("On it.");
+
+  let sessionId: string | undefined;
+  let outcome: LoopOutcome;
+
+  try {
+    const session = await options.browser.createSession(scope, { startUrl: options.startUrl });
+    sessionId = session.id;
+
+    outcome = await runLoop(
+      {
+        provider: options.browser,
+        executor: new BrowserExecutor({ driver: options.browser }),
+        model: resolved.provider,
+        modelId: options.modelId,
+      },
+      {
+        scope,
+        sessionId: session.id,
+        objective,
+        // Sent as they happen, so a slow task is visibly working rather than
+        // silently hung. Silence is what makes people ask again.
+        onStep: (note) => {
+          log(`  ${note}`);
+          void reply(note);
+        },
+      }
+    );
+  } catch (error) {
+    outcome = {
+      ok: false,
+      steps: 0,
+      reason: error instanceof Error ? error.message : "Something went wrong.",
+    };
+  } finally {
+    if (sessionId) {
+      await options.browser.destroy(scope, sessionId).catch(() => undefined);
+    }
+  }
+
+  await withWorkspace(options.pool, scope, async (client) => {
+    await client.query(`UPDATE tasks SET status = $2, updated_at = now() WHERE id = $1`, [
+      taskId,
+      outcome.ok ? "done" : "failed",
+    ]);
+  });
+
+  await reply(outcome.ok ? `Done — ${outcome.summary}` : outcome.reason);
+  return outcome;
+}
+
+/**
+ * Poll Telegram until stopped.
+ *
+ * The offset is advanced only after a batch is handled, so a crash mid-task
+ * redelivers rather than loses. For a channel where a lost message is a task
+ * that never happened, redelivering twice is the better failure — and the task
+ * id is the message id, so the second delivery updates the same row rather than
+ * starting a second task.
+ */
+export async function run(options: NellOptions, signal?: AbortSignal): Promise<void> {
+  const log = options.log ?? (() => undefined);
+  let offset = 0;
+
+  log("listening on Telegram");
+
+  while (!signal?.aborted) {
+    let batch;
+    try {
+      batch = await pollOnce(
+        { token: options.telegramToken, knownSenders: options.knownSenders },
+        offset
+      );
+    } catch {
+      // A network blip should not end the process. Wait and try again.
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      continue;
+    }
+
+    for (const message of batch.messages) {
+      if (signal?.aborted) break;
+      log(`> ${message.envelope.text.slice(0, 80)}`);
+      await handleMessage(options, message).catch((error: unknown) => {
+        log(`  failed: ${error instanceof Error ? error.message : "unknown"}`);
+        return undefined;
+      });
+    }
+
+    offset = batch.nextOffset;
+  }
+}
