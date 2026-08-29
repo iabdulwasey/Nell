@@ -176,7 +176,14 @@ export type ComputerAction = z.infer<typeof computerActionSchema>;
  */
 export function operationClassOfComputerAction(
   action: ComputerAction
-): "click" | "type" | "scroll" | "wait" | "screenshot" | "read-text" {
+): "click" | "type" | "scroll" | "wait" | "screenshot" | "read-text" | "read-clipboard" {
+  // Copy, cut and paste are clipboard operations wearing a keyboard costume,
+  // and they are a route the targeted DSL never had: triple-click a masked
+  // password field, copy it, paste it somewhere visible, and the next
+  // screenshot reads back the secret that masking was protecting. Classifying
+  // them honestly is what lets the taint machine refuse them.
+  if (action.action === "key" && isClipboardChord(action.keys)) return "read-clipboard";
+
   switch (action.action) {
     case "left_click":
     case "right_click":
@@ -202,6 +209,14 @@ export function operationClassOfComputerAction(
     case "cursor_position":
       return "read-text";
   }
+}
+
+/** Keys that move data through the system clipboard. */
+const CLIPBOARD_KEYS = new Set<KeyName>(["c", "v", "x"]);
+
+export function isClipboardChord(keys: readonly KeyName[]): boolean {
+  const held = keys.some((key) => key === "Control" || key === "Meta");
+  return held && keys.some((key) => CLIPBOARD_KEYS.has(key));
 }
 
 /* -------------------------------------------------------------------------- */

@@ -54,7 +54,14 @@ class FakeHost implements MachineHost {
   }
 
   async act(_machineId: string, _action: ComputerAction): Promise<ActOutcome> {
-    return { currentOrigin: "https://example.com" };
+    return { currentOrigin: "https://example.com", currentUrl: "https://example.com/" };
+  }
+
+  navigated: string[] = [];
+
+  async navigate(_machineId: string, url: string): Promise<ActOutcome> {
+    this.navigated.push(url);
+    return { currentOrigin: new URL(url).origin, currentUrl: url };
   }
 
   async destroy(machineId: string): Promise<void> {

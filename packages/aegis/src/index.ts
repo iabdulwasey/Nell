@@ -53,3 +53,14 @@ export {
   type ToolClass,
   type TurnContext,
 } from "./provenance-gate.js";
+
+export {
+  BrowserExecutor,
+  type AuditSink,
+  type DriverOptions,
+  type DriverResult,
+  type ExecuteOutcome,
+  type ExecuteRequest,
+  type ExecutorOptions,
+  type SessionDriver,
+} from "./executor.js";

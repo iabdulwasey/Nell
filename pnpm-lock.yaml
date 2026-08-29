@@ -141,6 +141,9 @@ importers:
       '@nell/audit':
         specifier: workspace:*
         version: link:../audit
+      '@nell/browser':
+        specifier: workspace:*
+        version: link:../browser
       '@nell/shared':
         specifier: workspace:*
         version: link:../shared

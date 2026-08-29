@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@nell/audit": "workspace:*",
+    "@nell/browser": "workspace:*",
     "@nell/shared": "workspace:*",
     "zod": "4.4.3"
   },

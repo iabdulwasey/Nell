@@ -11,6 +11,7 @@
  */
 
 import type { AccessScope } from "@nell/shared";
+import type { CaptureOptions } from "./adapters/computer-exec.js";
 import type { ComputerAction, CoordinateSpace } from "./computer.js";
 import type { BrowserAction } from "./dsl.js";
 
@@ -51,7 +52,8 @@ export interface BrowserProvider {
   perform(
     scope: AccessScope,
     sessionId: string,
-    actions: readonly BrowserAction[]
+    actions: readonly BrowserAction[],
+    options?: CaptureOptions
   ): Promise<ActionResult>;
 
   /**
@@ -62,7 +64,8 @@ export interface BrowserProvider {
   performComputer(
     scope: AccessScope,
     sessionId: string,
-    actions: readonly ComputerAction[]
+    actions: readonly ComputerAction[],
+    options?: CaptureOptions
   ): Promise<ActionResult>;
 
   /**

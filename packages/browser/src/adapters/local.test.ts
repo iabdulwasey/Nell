@@ -87,6 +87,8 @@ const COMPUTER_PAGE = `<!doctype html>
   <div id="textvalue"></div>
   <div id="slidervalue">0</div>
   <div id="keychord">none</div>
+  <input id="secret" value="hunter2-the-real-password"
+         style="position:absolute;left:0px;top:750px;width:900px;height:60px;font-size:40px" />
   <script>
     document.getElementById('text').addEventListener('input', function (e) {
       document.getElementById('textvalue').textContent = e.target.value;
@@ -555,5 +557,57 @@ describeBrowser("computer use", () => {
       provider.performComputer(otherScope, id, [{ action: "screenshot" }])
     ).rejects.toThrow(/not found/iu);
     await provider.destroy(scope, id);
+  }, 60_000);
+});
+
+/**
+ * Masking is what stands between a tainted session and a plaintext password in
+ * the model's context window. Asserting the option was passed proves nothing --
+ * only the encoded image does.
+ */
+describeBrowser("secret masking", () => {
+  it("paints over a masked field before the PNG is encoded", async () => {
+    const session = await provider.createSession(scope, { startUrl: `${origin}/computer` });
+
+    const clear = await provider.performComputer(scope, session.id, [{ action: "screenshot" }]);
+    const masked = await provider.performComputer(scope, session.id, [{ action: "screenshot" }], {
+      maskSelectors: ["#secret"],
+    });
+
+    expect(clear.screenshot).toBeTruthy();
+    expect(masked.screenshot).toBeTruthy();
+    // Same page, same moment, different pixels: the mask is real and not an
+    // option that was accepted and ignored.
+    expect(masked.screenshot).not.toBe(clear.screenshot);
+
+    await provider.destroy(scope, session.id);
+  }, 60_000);
+
+  it("masks on the targeted screenshot path too", async () => {
+    const session = await provider.createSession(scope, { startUrl: `${origin}/computer` });
+
+    const clear = await provider.perform(scope, session.id, [
+      { action: "screenshot", fullPage: false },
+    ]);
+    const masked = await provider.perform(
+      scope,
+      session.id,
+      [{ action: "screenshot", fullPage: false }],
+      { maskSelectors: ["#secret"] }
+    );
+
+    expect(masked.screenshot).not.toBe(clear.screenshot);
+    await provider.destroy(scope, session.id);
+  }, 60_000);
+
+  // A selector that matches nothing must not throw -- taint carries selectors
+  // from a page the session may since have navigated away from.
+  it("tolerates a mask selector that matches nothing", async () => {
+    const session = await provider.createSession(scope, { startUrl: `${origin}/computer` });
+    const result = await provider.performComputer(scope, session.id, [{ action: "screenshot" }], {
+      maskSelectors: ["#not-on-this-page"],
+    });
+    expect(result.screenshot).toBeTruthy();
+    await provider.destroy(scope, session.id);
   }, 60_000);
 });

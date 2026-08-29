@@ -25,6 +25,7 @@ export {
   fromAnthropicAction,
   fromOpenAIAction,
   genericToolSpec,
+  isClipboardChord,
   keyNameSchema,
   KEY_NAMES,
   MACHINE_VIEWPORT,
@@ -63,6 +64,15 @@ export type {
 } from "./provider.js";
 
 export { LocalBrowserProvider, type LocalBrowserOptions } from "./adapters/local.js";
+
+export { LocalMachineHost, type LocalMachineOptions } from "./adapters/local-machine.js";
+
+export {
+  runComputerActions,
+  screenshotOf,
+  type CaptureOptions,
+  type ComputerRunResult,
+} from "./adapters/computer-exec.js";
 
 export {
   buildSnapshot,

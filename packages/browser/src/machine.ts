@@ -64,6 +64,12 @@ export interface ActOutcome {
   readonly screenshot?: string;
   /** Origin the machine is on now. The origin gate reads this, not the model. */
   readonly currentOrigin: string;
+  /**
+   * The full URL. A worker driving by pixels needs to know which page it is on
+   * and cannot read it off a screenshot: a headless machine renders the page,
+   * not the browser's own chrome, so there is no address bar in the image.
+   */
+  readonly currentUrl: string;
   readonly cursor?: { readonly x: number; readonly y: number };
 }
 
@@ -79,6 +85,17 @@ export interface MachineHost {
   /** Suspend without losing state. */
   standby(machineId: string): Promise<void>;
   act(machineId: string, action: ComputerAction): Promise<ActOutcome>;
+
+  /**
+   * Open a URL.
+   *
+   * Navigation has to be an operation rather than something the model types
+   * into an address bar, because a headless machine has no address bar to type
+   * into. Restricted to http(s) for the same reason the targeted DSL is:
+   * `javascript:`, `data:` and `file:` turn a navigation into code execution or
+   * local-file access.
+   */
+  navigate(machineId: string, url: string): Promise<ActOutcome>;
   /** Irreversible. Disk and all sessions on it are gone. */
   destroy(machineId: string): Promise<void>;
 }
