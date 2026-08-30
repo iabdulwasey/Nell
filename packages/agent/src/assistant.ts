@@ -282,9 +282,32 @@ async function streamOnce(
   if (!response.ok || !response.body) {
     clearTimeout(idle);
     const status = response.status;
+
+    /**
+     * Read the body. It says what is wrong, and we were throwing it away.
+     *
+     * A 400 from this vendor carries `{"error":{"message":"..."}}` naming the
+     * exact block that was rejected — and the reason reaching the user was
+     * "400 from the model", which then became "that didn't work and I couldn't
+     * tell why". Both true, both useless, and the information was sitting in
+     * the response the whole time. A diagnostic that discards the diagnosis is
+     * worse than none, because it looks like one.
+     */
+    const detail = await response
+      .text()
+      .then((body) => {
+        const parsed = z
+          .object({ error: z.object({ message: z.string() }) })
+          .safeParse(JSON.parse(body));
+        return parsed.success ? parsed.data.error.message : body.slice(0, 300);
+      })
+      .catch(() => "");
+
     return {
       ok: false,
-      reason: `${String(status)} from the model`,
+      reason: detail
+        ? `${String(status)} from the model: ${detail}`
+        : `${String(status)} from the model`,
       // 4xx other than rate limiting will fail identically on a retry.
       retryable: status === 429 || status >= 500,
     };
@@ -582,7 +605,26 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
     preamble.push(...said);
     said.length = 0;
 
-    messages.push({ role: "assistant", content: parsed.data.content });
+    /**
+     * The blocks as they arrived, not the parsed ones.
+     *
+     * `responseSchema` exists to *read* a reply — is there text, was a tool
+     * called — and zod strips every key it was not told about. Sending that
+     * back was a real bug and a instructive one: a `web_search_tool_result`
+     * block carries `tool_use_id`, the schema does not mention it, so the echoed
+     * turn was missing a required field and the vendor refused the next request
+     * with `messages.1.content.2.web_search_tool_result.tool_use_id: Field
+     * required`.
+     *
+     * It only ever bit when a *client* tool was called, because that is the
+     * only time this conversation takes a second turn — a search-and-answer
+     * request never echoes anything and never noticed. Which is why "search the
+     * web and draw me something" failed while either half alone worked.
+     *
+     * The rule worth keeping: **a schema used to read a value must never become
+     * the value you send back.** What it does not know, it deletes.
+     */
+    messages.push({ role: "assistant", content: streamed.content });
 
     const results: Record<string, unknown>[] = [];
     for (const call of calls) {

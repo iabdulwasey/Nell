@@ -8,7 +8,22 @@
  * Governed by: docs/architecture.md
  */
 
-export { DEFAULT_IMAGE_MODEL, imageTool, type ImageToolOptions } from "./image.js";
+export {
+  DEFAULT_IMAGE_MODEL,
+  imageTool,
+  type ImageToolOptions,
+  type ImageVendor,
+} from "./image.js";
+
+export {
+  checkUrl,
+  fetchTool,
+  MAX_DOWNLOAD_BYTES,
+  MAX_REDIRECTS,
+  type BrowserFetch,
+  type FetchToolOptions,
+  type UrlVerdict,
+} from "./fetch-url.js";
 export {
   capabilitiesOf,
   CAPABILITY_LABELS,

@@ -27,7 +27,7 @@ import {
   type CoordinateSpace,
   type Point,
 } from "../computer.js";
-import type { ActOutcome, Machine, MachineHost } from "../machine.js";
+import type { ActOutcome, Downloaded, DownloadOptions, Machine, MachineHost } from "../machine.js";
 import { runComputerActions, type CaptureOptions } from "./computer-exec.js";
 
 export interface LocalMachineOptions {
@@ -163,6 +163,61 @@ export class LocalMachineHost implements MachineHost {
       currentUrl: live.page.url(),
       cursor: live.cursor,
     };
+  }
+
+  /**
+   * Read a URL as the browser. See `MachineHost.download`.
+   *
+   * `page.goto` rather than an HTTP client because the point is to be Chromium:
+   * its TLS handshake, its header order, its trust store. All three matter in
+   * practice — hosts that refuse a bare fetch serve the file to a browser, and
+   * a machine behind a TLS-inspecting network trusts what the system trusts
+   * while Node, carrying its own CA bundle, does not.
+   *
+   * The route guard is installed before the navigation and removed after, and
+   * it sees **every** request the page makes rather than just the first. A
+   * redirect is a new request; so is an image the page pulls in. A guard that
+   * only checked the URL we were handed would be checking the one hop the model
+   * already showed us.
+   */
+  async download(
+    machineId: string,
+    url: string,
+    options: DownloadOptions = {}
+  ): Promise<Downloaded> {
+    if (!isNavigable(url)) throw new Error("A download must be an http(s) URL.");
+
+    const live = this.#live.get(machineId) ?? (await this.#launch(machineId));
+    const { allow } = options;
+
+    if (allow) {
+      await live.page.route("**/*", async (route) => {
+        if (await allow(route.request().url())) await route.continue();
+        else await route.abort("blockedbyclient");
+      });
+    }
+
+    try {
+      const response = await live.page.goto(url, { waitUntil: "domcontentloaded" });
+      if (!response) throw new Error("The browser opened that URL and got nothing back.");
+
+      const bytes = new Uint8Array(await response.body());
+      const max = options.maxBytes;
+      if (max !== undefined && bytes.length > max) {
+        throw new Error("That file is too large.");
+      }
+
+      return {
+        status: response.status(),
+        mediaType: (response.headers()["content-type"] ?? "application/octet-stream")
+          .split(";")[0]!
+          .trim(),
+        bytes,
+        finalUrl: response.url(),
+      };
+    } finally {
+      if (allow) await live.page.unroute("**/*");
+    }
   }
 
   /**

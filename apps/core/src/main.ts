@@ -10,10 +10,18 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { BrowserExecutor } from "@nell/aegis";
 import { keysFromEnv, providerFor } from "@nell/agent";
-import { LocalBrowserProvider } from "@nell/browser/adapters";
+import { LocalBrowserProvider, LocalMachineHost } from "@nell/browser/adapters";
 import { accessScopeForUser } from "@nell/shared";
 import { anthropicSearchProvider } from "@nell/integrations";
-import { imageTool, type Capability } from "@nell/agent";
+import {
+  checkUrl,
+  fetchTool,
+  imageTool,
+  MAX_DOWNLOAD_BYTES,
+  type BrowserFetch,
+  type Capability,
+} from "@nell/agent";
+import { drawerFor, overridesFromEnv } from "./assignment.js";
 import { EnvKeyProvider } from "@nell/vault";
 import { auditSink, readAudit } from "./audit-store.js";
 import { installDurableTasks, shutdownDurableTasks } from "./durable-tasks.js";
@@ -165,7 +173,87 @@ const anthropicKey = process.env["ANTHROPIC_API_KEY"];
  * when a picture is wanted and writes the prompt itself.
  */
 const googleKey = process.env["GOOGLE_API_KEY"];
-const specialists = googleKey ? [imageTool({ apiKey: googleKey })] : [];
+
+/**
+ * What the model may reach for mid-task.
+ *
+ * `fetch_url` is unconditional: it needs no vendor and no key, only this
+ * machine's own internet — which the browser has been using all along. Its
+ * absence is why "search the web and download me an image" *generated* one
+ * instead. Search returns snippets and the vendor's sandbox is network-isolated,
+ * so nothing on the shelf could fetch bytes, and the model did the nearest
+ * possible thing rather than saying it could not.
+ */
+/**
+ * The rung above a plain fetch, and the reason it holds none of the user's logins.
+ *
+ * A model-chosen URL opened on the workspace's own machine would be opened by a
+ * browser that is signed into their airline, their bank and their email. The
+ * request would carry those cookies, and whatever came back would land in the
+ * model's context — a way to read the user's private pages by naming them,
+ * which is the shape of every gate in Aegis reversed. So downloads get a
+ * **scratch** machine: a fresh profile, no cookies, no identity, discarded when
+ * the download ends. It is slower than reusing the warm one, and that is the
+ * price of the boundary rather than an oversight.
+ *
+ * Per-download rather than pooled for the same reason `release` destroys them:
+ * a scratch machine that lived across downloads would start accumulating
+ * exactly the state it exists not to have.
+ */
+const scratchHost = new LocalMachineHost({
+  root: join(profileRoot, "scratch"),
+  headless: process.env["NELL_HEADED"] !== "1",
+});
+
+const viaBrowser: BrowserFetch = async (url) => {
+  const machine = await scratchHost.provision("downloads", { scratch: true });
+  try {
+    return await scratchHost.download(machine.id, url, {
+      /**
+       * The same refusal as the plain fetch, applied to every hop.
+       *
+       * Chromium follows redirects itself, so without this the check the model
+       * already passed would cover only the first request — and a public URL
+       * that 302s to the metadata endpoint is the attack this whole file exists
+       * to refuse, wearing a hat.
+       */
+      allow: async (candidate) => (await checkUrl(candidate)).ok,
+      maxBytes: MAX_DOWNLOAD_BYTES,
+    });
+  } finally {
+    await scratchHost.destroy(machine.id).catch(() => undefined);
+  }
+};
+
+/**
+ * Which model draws, decided by the admin's assignment rather than by which key
+ * happens to be set.
+ *
+ * `NELL_MODEL_IMAGE=openai/gpt-image-1` moves picture generation to OpenAI while
+ * everything else stays on the default model. Unset, it falls to the default
+ * model's own vendor if that vendor draws — so a Google-default install keeps
+ * working with no configuration, which is where this started.
+ *
+ * The same resolution feeds `/models`, so the settings answer and the running
+ * behaviour are one computation rather than two that can drift.
+ */
+const assignment = { defaultModel: modelId, overrides: overridesFromEnv(process.env) };
+const drawer = drawerFor(assignment, (vendor) =>
+  vendor === "google" ? googleKey : vendor === "openai" ? process.env["OPENAI_API_KEY"] : undefined
+);
+
+const specialists = [
+  fetchTool({ viaBrowser }),
+  ...(drawer
+    ? [
+        imageTool({
+          apiKey: drawer.apiKey,
+          vendor: drawer.vendor,
+          ...(drawer.model ? { model: drawer.model } : {}),
+        }),
+      ]
+    : []),
+];
 const search = anthropicKey ? anthropicSearchProvider({ apiKey: anthropicKey }) : undefined;
 
 /**
@@ -318,6 +406,14 @@ await run(
         process.env["DEEPSEEK_API_KEY"] ? "deepseek" : "",
       ].filter(Boolean)
     ),
+    /**
+     * So `/models` describes this install rather than a default one.
+     *
+     * It has always accepted overrides and never been given any, which made the
+     * settings answer accurate about the default model and blind to every
+     * per-capability choice an admin had made.
+     */
+    ...(Object.keys(assignment.overrides).length > 0 ? { assignment: assignment.overrides } : {}),
     ...(anthropicKey ? { assistKey: anthropicKey, assistModel: "claude-sonnet-4-5" } : {}),
     ...(specialists.length > 0 ? { tools: specialists } : {}),
     ...(vault && form && vaultKeys

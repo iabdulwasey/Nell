@@ -51,6 +51,8 @@ export {
   MachineRegistry,
   type ActOutcome,
   type DestroyReceipt,
+  type Downloaded,
+  type DownloadOptions,
   type Machine,
   type MachineHost,
   type MachineState,

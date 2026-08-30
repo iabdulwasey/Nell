@@ -96,8 +96,46 @@ export interface MachineHost {
    * local-file access.
    */
   navigate(machineId: string, url: string): Promise<ActOutcome>;
+
+  /**
+   * Fetch a URL's bytes *as the browser*, without driving anything.
+   *
+   * This exists because a plain HTTP client and a browser are not
+   * interchangeable to the far end. Hosts refuse a bare fetch on purpose —
+   * hotlink protection, anti-bot rules, a bot-check page served instead of the
+   * file — and the same URL opened by a real browser returns the real thing.
+   * The difference is not one header we could copy; it is the whole TLS
+   * fingerprint, the header order, and the trust store, which is why this is a
+   * machine operation and not an option on `fetch`.
+   *
+   * It is deliberately *not* navigation: nothing is clicked, nothing is typed,
+   * no state is meant to change. It is the strong way to read a public URL, and
+   * the caller decides which machine that happens on — for untrusted,
+   * model-chosen URLs, a scratch one that holds none of the user's logins.
+   *
+   * `allow` is checked before **every** request the page makes, redirects and
+   * subresources included, because the whole hazard of a model-chosen URL is
+   * where it points *next*. A host that ignores it is a host that can be
+   * pointed at the metadata endpoint.
+   */
+  download(machineId: string, url: string, options?: DownloadOptions): Promise<Downloaded>;
+
   /** Irreversible. Disk and all sessions on it are gone. */
   destroy(machineId: string): Promise<void>;
+}
+
+export interface DownloadOptions {
+  /** Asked of every request; a `false` aborts it. See `download`. */
+  readonly allow?: (url: string) => Promise<boolean>;
+  readonly maxBytes?: number;
+}
+
+export interface Downloaded {
+  readonly status: number;
+  readonly mediaType: string;
+  readonly bytes: Uint8Array;
+  /** Where it ended up, which is not always where it was sent. */
+  readonly finalUrl: string;
 }
 
 /** How long a machine sits warm after its last use before suspending. */

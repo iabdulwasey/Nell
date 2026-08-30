@@ -5,6 +5,7 @@ import {
   MachineRegistry,
   type ActOutcome,
   type ComputerAction,
+  type Downloaded,
   type Machine,
   type MachineHost,
 } from "./index.js";
@@ -55,6 +56,18 @@ class FakeHost implements MachineHost {
 
   async act(_machineId: string, _action: ComputerAction): Promise<ActOutcome> {
     return { currentOrigin: "https://example.com", currentUrl: "https://example.com/" };
+  }
+
+  downloaded: string[] = [];
+
+  async download(_machineId: string, url: string): Promise<Downloaded> {
+    this.downloaded.push(url);
+    return {
+      status: 200,
+      mediaType: "image/png",
+      bytes: new Uint8Array([1, 2, 3]),
+      finalUrl: url,
+    };
   }
 
   navigated: string[] = [];

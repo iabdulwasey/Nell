@@ -42,6 +42,7 @@ import type { VaultItemKind } from "@nell/vault";
 import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
 import { runLoop, type LoopOutcome } from "./agent-loop.js";
+import { catalogLookup } from "./assignment.js";
 import { withWorkspace } from "./db.js";
 import { answerAboutFiles, fetchAttachment, readableKind, type StoredFile } from "./documents.js";
 import { humanise } from "./failure.js";
@@ -282,12 +283,14 @@ export async function handleMessage(
               defaultModel: options.modelId,
               ...(options.assignment ? { overrides: options.assignment } : {}),
             },
-            (id: string) => {
-              const entry = REFERENCE_CATALOG.find((model) => model.id === id);
-              return entry
-                ? { provider: entry.provider, supportsVision: entry.supportsVision }
-                : undefined;
-            },
+            /**
+             * The same lookup the picture tool is built from.
+             *
+             * Inlined here once, and it drifted immediately: this one refused a
+             * bare vendor name, so an install that was drawing perfectly well
+             * was told it could not draw.
+             */
+            catalogLookup,
             options.vendorKeys
           )
         )
