@@ -75,7 +75,13 @@ import { memorySources } from "./memory-store.js";
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createFollowUp, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
-import { addRule, readDirectives, readLedger, recordOutcome } from "./memory-store.js";
+import {
+  addRule,
+  extendOutcome,
+  readDirectives,
+  readLedger,
+  recordOutcome,
+} from "./memory-store.js";
 import {
   MIN_RECALL_TOKENS,
   PROMPT_RESERVE_TOKENS,
@@ -801,6 +807,15 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
    * task that dies before planning still records something true.
    */
   let resolved = run.objective;
+  /**
+   * Whether this message carries on the goal that just finished.
+   *
+   * "Find me Spider-Man showtimes" then "book two at the Sector 90 one" is one
+   * job in two messages, and recording it as two leaves the history reading as
+   * two separate things done — noise in the exact record meant to answer "the
+   * same as last time".
+   */
+  let continues = false;
   /** Set when this message answered a pending question, so nothing is duplicated. */
   let resuming: string | undefined;
   const produced: { readonly path: string; readonly name: string }[] = [];
@@ -830,9 +845,18 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
        */
       ...(conversation.length > 0 ? { conversation: renderConversation(conversation) } : {}),
       ...(brain ? { profile: brain } : {}),
+      /**
+       * The goal that just finished, so a follow-on can be recognised as one.
+       *
+       * Taken from the newest ledger entry, which is where a finished goal
+       * lands. Absent on a first request, and its absence is what lets the
+       * answer be honest rather than guessed.
+       */
+      ...(history[0] ? { lastGoal: history[0].objective } : {}),
     });
 
     resolved = plan.objective;
+    continues = plan.continuesLastGoal;
 
     /**
      * The message answered the question, so the task that asked it carries on.
@@ -1017,7 +1041,7 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
    */
   if (outcome.ok || !outcome.needsApproval) {
     await withWorkspace(options.pool, run.scope, (client) =>
-      recordOutcome(client, run.scope, {
+      recordFor(client, run.scope, continues, {
         taskId: resuming ?? run.taskId,
         objective: resolved,
         outcome: outcome.ok ? "succeeded" : "failed",
@@ -1506,6 +1530,24 @@ async function recallCommand(
   const hits = searchMemory(index, query, { now: Date.now() });
 
   return hits.length === 0 ? `Nothing I know bears on "${query}".` : renderRecalled(hits);
+}
+
+/**
+ * One entry per goal, whether the goal took one message or three.
+ *
+ * A follow-on folds into the row it continues; anything else writes its own. The
+ * fold degrades to a new entry when there is nothing to extend — a continuation
+ * of a goal whose row has since been deleted is simply a new goal, and refusing
+ * to record it would lose the work entirely.
+ */
+async function recordFor(
+  client: Parameters<typeof recordOutcome>[0],
+  scope: AccessScope,
+  continues: boolean,
+  input: Parameters<typeof recordOutcome>[2]
+): Promise<void> {
+  if (continues && (await extendOutcome(client, scope, input))) return;
+  await recordOutcome(client, scope, input);
 }
 
 async function auditCommand(options: NellOptions, scope: AccessScope): Promise<string> {

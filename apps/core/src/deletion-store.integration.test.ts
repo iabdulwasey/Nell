@@ -18,7 +18,7 @@ import { verifyReceipt } from "@nell/memory";
 import { withWorkspace } from "./db.js";
 import { buildIndex, searchMemory } from "@nell/memory";
 import { deleteScope, renderReceipt, tenantTables, uncovered } from "./deletion-store.js";
-import { memorySources, readLedger, recordOutcome } from "./memory-store.js";
+import { extendOutcome, memorySources, readLedger, recordOutcome } from "./memory-store.js";
 
 const url = process.env["DATABASE_URL"];
 const describeDb = url ? describe : describe.skip;
@@ -313,3 +313,65 @@ function describe_covered(): void {
     });
   });
 }
+
+describeDb("one goal, one entry", () => {
+  /**
+   * "Find me Spider-Man showtimes" then "book two at the Sector 90 one" is one
+   * job in two messages. Recorded as two, the history reads as two separate
+   * things done — noise in the exact record meant to answer "the same as last
+   * time", and the reason the ledger's own header argues for one entry per goal.
+   */
+  it("folds a follow-on into the goal it continues", async () => {
+    await withWorkspace(pool, scope, (client) =>
+      recordOutcome(client, scope, {
+        taskId: "find",
+        objective: "Find Spider-Man showtimes near Gurugram",
+        outcome: "succeeded",
+        found: "Wave Cinemas Sector 90 — 10:45 PM",
+      })
+    );
+
+    const before = (await withWorkspace(pool, scope, (client) => readLedger(client, scope, 20)))
+      .length;
+
+    const folded = await withWorkspace(pool, scope, (client) =>
+      extendOutcome(client, scope, {
+        taskId: "book",
+        objective: "Book 2 seats for Spider-Man at Wave Cinemas Sector 90, 10:45 PM",
+        outcome: "succeeded",
+        found: "Booked D6 and D7",
+      })
+    );
+    expect(folded).toBe(true);
+
+    const after = await withWorkspace(pool, scope, (client) => readLedger(client, scope, 20));
+    // One entry, not two.
+    expect(after.length).toBe(before);
+
+    const entry = after[0];
+    // The later message is the better description of what was wanted.
+    expect(entry?.objective).toContain("Book 2 seats");
+    // And nothing the first half learned is lost.
+    expect(entry?.detail["found"]).toContain("10:45 PM");
+    expect(entry?.detail["found"]).toContain("Booked D6");
+  });
+
+  /**
+   * A continuation of a goal whose row has since been deleted is simply a new
+   * goal. Refusing to record it would lose the work entirely, which is worse
+   * than an extra row.
+   */
+  it("reports there was nothing to extend, so the caller writes a new entry", async () => {
+    await withWorkspace(pool, scope, (client) => deleteScope(client, scope, "history", Date.now()));
+
+    const folded = await withWorkspace(pool, scope, (client) =>
+      extendOutcome(client, scope, {
+        taskId: "orphan",
+        objective: "Book something",
+        outcome: "succeeded",
+        found: "done",
+      })
+    );
+    expect(folded).toBe(false);
+  });
+});

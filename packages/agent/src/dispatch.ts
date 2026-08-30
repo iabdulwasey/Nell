@@ -98,6 +98,23 @@ export interface Dispatch {
    * Always false when nothing was pending — there is nothing to answer.
    */
   readonly answersPendingQuestion: boolean;
+  /**
+   * This message carries on the goal that just finished, rather than starting a
+   * new one.
+   *
+   * *"Find me Spider-Man showtimes"* then *"book two at the Sector 90 one"* is
+   * **one job in two messages**, and recording it as two leaves the history
+   * reading as two separate things done — noise in the exact record that is
+   * meant to answer "the same as last time".
+   *
+   * Distinct from `answersPendingQuestion`, which is about a task that stopped
+   * to *ask*. This one is about a task that finished cleanly and is being built
+   * upon, where nothing was pending and nobody was waiting.
+   *
+   * Always false when no goal has recently finished, for the same reason: there
+   * is nothing to continue.
+   */
+  readonly continuesLastGoal: boolean;
 }
 
 /**
@@ -148,6 +165,14 @@ const dispatchSchema = {
      * question turned the user's reply into a new task and stranded the
      * original, which is the "to and fro" problem exactly.
      */
+    continuesLastGoal: {
+      type: "boolean",
+      description:
+        "True if this message carries on the goal that just finished rather than " +
+        "starting a new one — booking the thing that was just found, or refining a " +
+        "result just given. False for anything genuinely new, however similar the " +
+        "subject.",
+    },
     answersPendingQuestion: {
       type: "boolean",
       description:
@@ -185,13 +210,14 @@ const dispatchSchema = {
       },
     },
   },
-  required: ["summary", "objective", "answersPendingQuestion", "steps"],
+  required: ["summary", "objective", "answersPendingQuestion", "continuesLastGoal", "steps"],
 };
 
 const parsed = z.object({
   summary: z.string().max(200).default(""),
   objective: z.string().max(2000).default(""),
   answersPendingQuestion: z.boolean().default(false),
+  continuesLastGoal: z.boolean().default(false),
   steps: z
     .array(
       z.object({
@@ -234,6 +260,13 @@ export interface DispatchRequest {
    * is why `answersPendingQuestion` can be answered honestly rather than guessed.
    */
   readonly pendingQuestion?: string;
+  /**
+   * The goal that most recently finished, so a follow-on can be recognised.
+   *
+   * Absent when nothing has finished recently — and its absence is what lets
+   * `continuesLastGoal` be answered honestly rather than guessed at.
+   */
+  readonly lastGoal?: string;
   readonly timeoutMs?: number;
 }
 
@@ -261,6 +294,8 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
       summary: "Reading what you sent.",
       objective: request.message,
       answersPendingQuestion: false,
+      // A file arriving is its own request, whatever came before it.
+      continuesLastGoal: false,
       steps: [{ capability: "assist", instruction: request.message }],
     };
   }
@@ -282,6 +317,17 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
       "generating pictures then packaging them, or browsing for something then writing it",
       "up. Steps run in order and feed each other.",
       "",
+      request.lastGoal
+        ? [
+            "",
+            "The goal that just finished was:",
+            `  "${request.lastGoal}"`,
+            "",
+            "Set continuesLastGoal=true if this message builds on it — booking what was just",
+            "found, refining what was just given. False if it is genuinely new work, however",
+            "close the subject.",
+          ].join("\n")
+        : "",
       request.pendingQuestion
         ? [
             "",
@@ -329,6 +375,10 @@ export async function planWork(request: DispatchRequest): Promise<Dispatch> {
     // not shown is guessing, and the cost of that guess is resuming a task the
     // user had moved on from.
     answersPendingQuestion: Boolean(request.pendingQuestion) && result.data.answersPendingQuestion,
+    // Forced false with nothing to continue, for the same reason the pending
+    // flag is: a model asked to judge against a goal it was never shown will
+    // invent a judgement, and the cost here is a merged history.
+    continuesLastGoal: Boolean(request.lastGoal) && result.data.continuesLastGoal,
     steps: result.data.steps,
   };
 }
@@ -339,6 +389,8 @@ function fallback(message: string): Dispatch {
     summary: "Having a look.",
     objective: message,
     answersPendingQuestion: false,
+    // The router could not say, so it must not claim a continuation either.
+    continuesLastGoal: false,
     steps: [
       {
         capability: OBVIOUSLY_BROWSING.test(message) ? "browse" : "assist",

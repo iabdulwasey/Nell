@@ -23,6 +23,7 @@ import {
   directiveKindSchema,
   liveDirectives,
   recordTask,
+  sanitizeDetail,
   taskOutcomeSchema,
   type Directive,
   type LedgerEntry,
@@ -343,4 +344,57 @@ export async function memorySources(
     at: row.at.getTime(),
     ...(row.importance === null ? {} : { importance: row.importance }),
   }));
+}
+
+/**
+ * Fold a follow-on into the goal it continues, rather than adding a second row.
+ *
+ * *"Find me Spider-Man showtimes"* then *"book two at the Sector 90 one"* is one
+ * job in two messages. Recorded as two, the history reads as two separate things
+ * done — noise in the exact record that is meant to answer *"the same as last
+ * time"*, and the reason this file's own header argues for one entry per goal.
+ *
+ * The objective is replaced with the fuller one and the findings are joined,
+ * because the later message is the better description of what was actually
+ * wanted: "book two at the Sector 90 one" says more about the goal than "find me
+ * showtimes" did.
+ *
+ * Returns false when there was nothing to extend, so the caller writes a new
+ * entry instead — a continuation of a goal whose row has already been deleted is
+ * simply a new goal.
+ */
+export async function extendOutcome(
+  client: PoolClient,
+  scope: AccessScope,
+  input: RecordTaskInput
+): Promise<boolean> {
+  const { rows } = await client.query<{ id: string; detail: Record<string, string> }>(
+    `SELECT id, detail FROM task_ledger
+      WHERE workspace_id = $1
+      ORDER BY completed_at DESC
+      LIMIT 1`,
+    [scope.workspaceId]
+  );
+
+  const previous = rows[0];
+  if (!previous) return false;
+
+  const before = previous.detail["found"];
+  const now = input.found?.trim();
+  const found = [before, now].filter(Boolean).join(" · ").slice(0, 500);
+
+  await client.query(
+    `UPDATE task_ledger
+        SET objective = $3, outcome = $4, detail = $5::jsonb, completed_at = now()
+      WHERE workspace_id = $1 AND id = $2`,
+    [
+      scope.workspaceId,
+      previous.id,
+      input.objective.slice(0, 1000),
+      input.outcome,
+      JSON.stringify(sanitizeDetail(found ? { found } : {})),
+    ]
+  );
+
+  return true;
 }
