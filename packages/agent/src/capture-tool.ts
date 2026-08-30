@@ -64,12 +64,36 @@ function nameFrom(title: string, url: string): string {
 export function captureTool(options: CaptureToolOptions): ClientTool {
   return {
     name: "screenshot_page",
+    /**
+     * The trigger is what the answer *rests on*, not whether showing was asked for.
+     *
+     * Measured: with the description written around "showing beats describing",
+     * it fired on *"is there rain over London right now — show me"* and not on
+     * *"given today's fog, where should I photograph Sutro Tower"* — where the
+     * entire answer hinges on what the fog is doing, and a map settles in one
+     * glance what a paragraph only asserts. The word "show" was doing the work,
+     * so the tool was reachable only when someone already knew to ask for it.
+     *
+     * Naming the *condition* instead is what makes it a judgement the model can
+     * make on its own: if you are about to tell someone what the weather, the
+     * traffic or the crowds are doing right now, show them what you read it
+     * from. The negative half is stated just as plainly, because a tool that
+     * fires on everything is the `generate_image` mistake wearing a different
+     * hat — it claimed "whenever an image is wanted" and drew a monkey rather
+     * than downloading one.
+     */
     description:
-      "Open a public web page in a real browser and return a picture of it. Use this when the " +
-      "rendering IS the information and text cannot carry it — a live weather or radar map, a " +
-      "chart, a seat map, a live departures board, a page whose content is drawn by JavaScript. " +
-      "The picture is given to the user as well as to you, so reach for it whenever showing " +
-      "beats describing. Use fetch_url instead when you want the words on a page or a file.",
+      "Open a public web page in a real browser and return a picture of it, which is given to " +
+      "the user as well as to you.\n\n" +
+      "Use it when the rendering IS the information and text cannot carry it — a live weather " +
+      "or radar map, a chart, a seat map, a departures board, anything drawn by JavaScript.\n\n" +
+      "Also use it when your answer RESTS ON a live condition: if you are about to tell someone " +
+      "what the weather, the fog, the traffic, the queue or the availability is doing right now, " +
+      "show them the map or board you read it from. Your sentence is a claim; the picture is the " +
+      "evidence, and they can see in one glance what you would need a paragraph to assert.\n\n" +
+      "Do not use it for things that are not visual — a fact, a definition, a calculation, a " +
+      "price you can simply state. A screenshot of an article is worse than quoting it. Use " +
+      "fetch_url when you want the words on a page, or a file.",
     inputSchema: {
       type: "object",
       properties: {

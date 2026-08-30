@@ -12,7 +12,7 @@
     "serve": "node dist/main.js",
     "start": "tsx src/index.ts",
     "test": "vitest run --exclude '**/*.live.test.ts' --passWithNoTests",
-    "test:live": "RUN_LIVE_MODEL_TESTS=1 vitest run src/nell.live.test.ts",
+    "test:live": "RUN_LIVE_MODEL_TESTS=1 vitest run src/nell.live.test.ts src/capture-judgement.live.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
