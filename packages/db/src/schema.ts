@@ -353,6 +353,50 @@ export const messages = pgTable(
   (table) => [index("messages_workspace_at_idx").on(table.workspaceId, table.at)]
 );
 
+/**
+ * Signing in, and staying signed in.
+ *
+ * **Deliberately without a `workspace_id`, and that is the interesting part.**
+ * Every other table here is tenant data and carries one, which is what the
+ * migration's row-level-security check keys off. These two are not tenant data:
+ * they are how somebody *establishes* which tenant they are, and they are read
+ * before any workspace is known. A `workspace_id` on them would be a column
+ * that cannot be filtered on at the moment it matters, and would make the RLS
+ * gate demand a policy that could never be satisfied.
+ *
+ * Neither table stores anything usable if it leaks. The challenge holds a
+ * peppered hash of the code, never the code; the session holds a hash of the
+ * token, never the token. Reading these rows tells an attacker that somebody
+ * signed in, and nothing else.
+ */
+export const authChallenges = pgTable(
+  "auth_challenges",
+  {
+    id: text("id").primaryKey(),
+    /** Who it was sent to — a Telegram id here, an E.164 number elsewhere. */
+    destination: text("destination").notNull(),
+    codeHash: text("code_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("auth_challenges_destination_idx").on(table.destination, table.createdAt)]
+);
+
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    /** Hash of the cookie value. The cookie itself is never stored. */
+    tokenHash: text("token_hash").primaryKey(),
+    userId: text("user_id").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("auth_sessions_user_idx").on(table.userId)]
+);
+
 /** Append-only hash-chained audit log. Never updated, never deleted. */
 export const auditLog = pgTable(
   "audit_log",

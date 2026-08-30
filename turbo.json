@@ -1,13 +1,15 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "globalEnv": [
-    "NODE_ENV",
     "DATABASE_URL",
-    "SECRET_ENCRYPTION_KEY",
     "KERNEL_API_KEY",
     "MODEL_GATEWAY_API_KEY",
     "NELL_LICENSE_KEY",
-    "NELL_LICENSE_PUBLIC_KEY"
+    "NELL_LICENSE_PUBLIC_KEY",
+    "NELL_OWNER_TELEGRAM_ID",
+    "NODE_ENV",
+    "SECRET_ENCRYPTION_KEY",
+    "TELEGRAM_BOT_TOKEN"
   ],
   "tasks": {
     "build": {

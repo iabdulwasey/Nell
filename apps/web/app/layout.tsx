@@ -7,36 +7,16 @@ export const metadata = {
 };
 
 /**
- * The nav order is the order things matter when something is wrong: what needs
- * you, then what is running, then the things you check when you want to know
- * whether to trust any of it.
+ * Nothing but the document.
+ *
+ * The nav and the sign-in guard moved into `(dashboard)`, so that `/signin` can
+ * render without them — a sign-in page wrapped in a layout that redirects
+ * unauthenticated visitors to the sign-in page is a loop.
  */
-const LINKS = [
-  ["/", "Tasks"],
-  ["/approvals", "Approvals"],
-  ["/machine", "Your computer"],
-  ["/vault", "Vault"],
-  ["/memory", "Memory"],
-  ["/audit", "Audit log"],
-  ["/settings", "Models"],
-] as const;
-
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>
-        <div className="shell">
-          <nav className="side">
-            <div className="brand">Nell</div>
-            {LINKS.map(([href, label]) => (
-              <a key={href} href={href}>
-                {label}
-              </a>
-            ))}
-          </nav>
-          <main>{children}</main>
-        </div>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

@@ -114,6 +114,9 @@ importers:
       '@nell/audit':
         specifier: workspace:*
         version: link:../../packages/audit
+      '@nell/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@nell/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -152,8 +155,8 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
       vitest:
-        specifier: 3.2.4
-        version: 3.2.4(@types/node@24.13.3)(lightningcss@1.33.0)(tsx@4.20.6)(yaml@2.9.0)
+        specifier: 4.1.10
+        version: 4.1.10(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.20.6)(yaml@2.9.0))
 
   ee/admin:
     dependencies:

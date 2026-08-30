@@ -10,6 +10,8 @@
 export {
   approvals,
   auditLog,
+  authChallenges,
+  authSessions,
   monitorReports,
   monitors,
   notificationOutbox,

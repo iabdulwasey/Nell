@@ -8,13 +8,14 @@
     "build": "next build",
     "dev": "next dev --port 3000",
     "start": "next start",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@nell/aegis": "workspace:*",
     "@nell/agent": "workspace:*",
     "@nell/audit": "workspace:*",
+    "@nell/auth": "workspace:*",
     "@nell/db": "workspace:*",
     "@nell/shared": "workspace:*",
     "@nell/views": "workspace:*",
@@ -29,6 +30,6 @@
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.1",
     "typescript": "5.9.3",
-    "vitest": "3.2.4"
+    "vitest": "4.1.10"
   }
 }

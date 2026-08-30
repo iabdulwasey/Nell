@@ -76,14 +76,26 @@ chain, and model settings. It reads and never writes — the agent owns every
 mutation, and a second path into those tables with none of the gates attached
 would be exactly the hole the gates exist to close.
 
-> **⚠️ Bind it to localhost. There is no login yet.**
->
-> The dashboard shows whatever belongs to `NELL_OWNER_TELEGRAM_ID` — the same
-> person who may text the bot — and does not ask who you are. On a laptop that
-> is fine and is how most people will run it. Exposed to a network it is an open
-> window onto one person's tasks, memory and vault labels. Authentication is
-> built in `@nell/auth` and is not wired to this yet, which is stated here
-> rather than left to be discovered.
+### Signing in
+
+Nell messages you a six-digit code **on Telegram**. Holding the account that owns
+this Nell is what proves the dashboard is yours — there is nobody else it could
+belong to, and it needs no SMS provider, no account and no bill.
+
+Sign-in switches itself on when `TELEGRAM_BOT_TOKEN`, `NELL_OWNER_TELEGRAM_ID`
+and `SECRET_ENCRYPTION_KEY` are all present. Without them the dashboard stays
+open rather than locking a single-user laptop install out of its own data —
+**so an install in that state must not leave localhost.**
+
+Neither the code nor the session cookie is stored. The tables hold peppered
+hashes of both, so reading them tells an attacker that somebody signed in and
+nothing else. Codes expire in five minutes, allow five attempts, and are
+single-use; asking for a new one voids the old, or the attempt cap would be
+defeated by pressing the button.
+
+> **Behind TLS, set the session cookie to `secure`.** It is off by default
+> because this is served over plain HTTP on localhost, where `secure` means the
+> cookie is silently never stored — sign-in would appear to work and never take.
 
 ## Running a build rather than the source
 
