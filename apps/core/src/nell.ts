@@ -191,6 +191,13 @@ export interface NellOptions {
   /** What was done, and whether the record of it still verifies. */
   readonly audit?: (scope: AccessScope) => Promise<AuditView>;
   /**
+   * Hand the browser to the person when a page refuses automation.
+   *
+   * Returns a one-time link, or undefined on an install with no machine — in
+   * which case the agent explains the wall exactly as it did before.
+   */
+  readonly offerHandoff?: (scope: AccessScope, url: string) => Promise<string | undefined>;
+  /**
    * Write a deletion into the audit chain.
    *
    * The one record that must outlive the data it describes. Optional because an
@@ -240,6 +247,8 @@ const recent = new Map<string, StoredFile[]>();
 export interface Live {
   /** Drains what the user has said since the task started. */
   readonly steering?: () => readonly Steer[];
+  /** Offer the controls when a page refuses automation. See the loop. */
+  readonly offerHandoff?: (url: string) => Promise<string | undefined>;
   /**
    * Each progress note, so the caller can keep the last few.
    *
@@ -956,6 +965,9 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         files,
         profile: brain,
         ...(run.live?.steering ? { steering: run.live.steering } : {}),
+        ...(options.offerHandoff
+          ? { offerHandoff: (url: string) => options.offerHandoff!(run.scope, url) }
+          : {}),
         ...(run.live?.signal ? { signal: run.live.signal } : {}),
       },
       plan.steps
@@ -1550,6 +1562,27 @@ async function recordFor(
   await recordOutcome(client, scope, input);
 }
 
+/**
+ * The first queued item not waiting on something still running.
+ *
+ * **Skipped rather than blocking the queue**, which is the part worth stating:
+ * a task waiting for a booking must not hold up an unrelated question asked
+ * after it. Order is otherwise preserved, so the ordinary case — nothing waiting
+ * on anything — is still first-in-first-out.
+ *
+ * An item waiting on a task that is no longer running is ready, whether that
+ * task finished or never existed. Both readings are the same and both are right:
+ * a dependency that cannot be satisfied by waiting should not wait for ever.
+ */
+export function nextReady(
+  queue: readonly { readonly waitsFor?: string }[],
+  stillRunning: (taskId: string) => boolean
+): number {
+  return queue.findIndex(
+    (queued) => queued.waitsFor === undefined || !stillRunning(queued.waitsFor)
+  );
+}
+
 async function auditCommand(options: NellOptions, scope: AccessScope): Promise<string> {
   if (!options.audit) return "This install is not keeping an audit log.";
 
@@ -1818,7 +1851,16 @@ interface AwaitingApproval {
  */
 export async function run(options: NellOptions, signal?: AbortSignal): Promise<void> {
   const log = options.log ?? (() => undefined);
-  const inbox: InboundMessage[] = [];
+  /**
+   * Queued work, and what any of it is waiting for.
+   *
+   * A plain list released on a free slot cannot express *"after that one"* —
+   * so "book me a flight" followed by "and put it in my calendar" ran the two
+   * concurrently and the second found nothing to add. The dependency is held
+   * beside the message rather than inside it, because it is a fact about the
+   * queue rather than about what was said.
+   */
+  const inbox: { readonly message: InboundMessage; readonly waitsFor?: string }[] = [];
   /**
    * Tasks in flight, keyed by their own id.
    *
@@ -1993,6 +2035,21 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
                * thing twice and then said Nell was not listening; it was
                * listening, and had said nothing.
                */
+              if (intent.kind === "after-this") {
+                /**
+                 * It needs the running task's result, so it waits for *that*
+                 * task rather than for a free slot.
+                 */
+                inbox.push({ message, waitsFor: target.taskId });
+                await sendMessage({
+                  token: options.telegramToken,
+                  chatId: message.envelope.threadRef,
+                  text: `Will do, once "${steered.task.label.slice(0, 40)}" is finished.`,
+                });
+                log(`  ! queued behind "${steered.task.label.slice(0, 40)}"`);
+                continue;
+              }
+
               await sendMessage({
                 token: options.telegramToken,
                 chatId: message.envelope.threadRef,
@@ -2022,7 +2079,7 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
           }
         }
 
-        inbox.push(message);
+        inbox.push({ message });
       }
 
       offset = batch.nextOffset;
@@ -2037,7 +2094,8 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
    * coordinator, not concurrency bolted on here.
    */
   while (!signal?.aborted) {
-    const message = inbox.shift();
+    const readyAt = nextReady(inbox, (taskId) => running.has(taskId));
+    const message = readyAt === -1 ? undefined : inbox.splice(readyAt, 1)[0]?.message;
     if (!message) {
       if (running.size === 0) await new Promise((resolve) => setTimeout(resolve, 250));
       else await Promise.race([...running.values()].map((task) => task.done));

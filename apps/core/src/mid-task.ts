@@ -44,6 +44,16 @@ export type MidTaskIntent =
   | { readonly kind: "refine"; readonly constraint: string }
   /** Unrelated work, to be done after this. */
   | { readonly kind: "new-task" }
+  /**
+   * Work that **cannot start until the running task finishes**, because it
+   * operates on that task's result.
+   *
+   * *"Book me a flight"* then *"and put it in my calendar"* — the second is not
+   * a correction and not an independent request. Run concurrently it finds
+   * nothing to add, which is how it behaved before this existed: the queue
+   * released it on a free slot rather than on the thing it needed.
+   */
+  | { readonly kind: "after-this" }
   /** The same request again, because nothing appeared to be happening. */
   | { readonly kind: "repeat" };
 
@@ -52,13 +62,15 @@ const intentSchema = {
   properties: {
     kind: {
       type: "string",
-      enum: ["redirect", "refine", "new-task", "repeat"],
+      enum: ["redirect", "refine", "new-task", "after-this", "repeat"],
       description:
         "redirect: the user has changed what they want done — a different place, date, " +
         "item or destination, or an explicit 'forget that'. " +
         "refine: the goal is unchanged and they are correcting HOW — avoid a site, pick a " +
         "different option, stop doing something that is not working. " +
-        "new-task: unrelated work to do afterwards. " +
+        "new-task: unrelated work, which can run at any time. " +
+        "after-this: work that OPERATES ON the running task's result and cannot start " +
+        "until it finishes — 'and add it to my calendar', 'then email me the confirmation'. " +
         "repeat: they have sent essentially the same request again, most likely because " +
         "nothing seemed to be happening.",
     },
@@ -82,7 +94,7 @@ const intentSchema = {
 };
 
 const parsed = z.object({
-  kind: z.enum(["redirect", "refine", "new-task", "repeat"]).default("refine"),
+  kind: z.enum(["redirect", "refine", "new-task", "after-this", "repeat"]).default("refine"),
   objective: z.string().max(2000).default(""),
   constraint: z.string().max(2000).default(""),
 });
@@ -148,6 +160,8 @@ export async function classifyMidTask(
         : { kind: "refine", constraint: text };
     case "new-task":
       return { kind: "new-task" };
+    case "after-this":
+      return { kind: "after-this" };
     case "repeat":
       return { kind: "repeat" };
     default:

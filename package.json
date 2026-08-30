@@ -17,7 +17,8 @@
     "check": "turbo run typecheck lint test && pnpm format:check && pnpm licenses:check",
     "licenses:check": "node scripts/check-licenses.mjs",
     "attacks": "pnpm --filter @nell/evals exec vitest run src/attacks.test.ts --reporter=verbose",
-    "browsers:install": "pnpm --filter @nell/browser exec playwright-core install --with-deps chromium"
+    "browsers:install": "pnpm --filter @nell/browser exec playwright-core install --with-deps chromium",
+    "start": "node scripts/start.mjs"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

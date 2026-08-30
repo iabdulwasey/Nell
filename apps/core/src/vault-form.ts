@@ -32,6 +32,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { actionFor, handoffPage, readCommand, type HandoffMachine } from "./handoff-view.js";
 import type { AccessScope } from "@nell/shared";
 import type { KeyProvider } from "@nell/vault";
 import type { Pool } from "pg";
@@ -43,6 +44,17 @@ import { saveItem } from "./vault-store.js";
 /** Long enough that a link left in a terminal is not a standing key. */
 export const LINK_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * How long a takeover may be held.
+ *
+ * The same ten minutes, and stated separately because it is a different
+ * quantity that happens to agree today: a vault link measures "type a password",
+ * a handoff measures "solve a puzzle a computer cannot, on a phone, possibly
+ * getting it wrong twice". Sharing the constant would hide that they can move
+ * apart.
+ */
+export const HANDOFF_TTL_MS = 10 * 60 * 1000;
+
 /** A form is a few hundred bytes; anything larger is not one. */
 const MAX_BODY = 16 * 1024;
 
@@ -53,6 +65,16 @@ interface Pending {
   /** What is already known, so only the password has to be typed. */
   readonly username: string;
   readonly expiresAt: number;
+  /**
+   * Set on a handoff link, which is the one route here that is *not* single-use.
+   *
+   * A vault link is burned the moment it is used because it is opened once and
+   * submitted once. A handoff is a session somebody holds for ninety seconds —
+   * burning it on the first screenshot would end the takeover before the page
+   * had finished loading. It expires instead, and is revoked when the person
+   * says they are done.
+   */
+  readonly handoff?: { readonly grantId: string; readonly reason: string; readonly site: string };
 }
 
 /**
@@ -105,6 +127,22 @@ export interface VaultFormOptions {
    * still has nothing to do with hash chains.
    */
   readonly onSaved?: (scope: AccessScope, kind: VaultItemKind, itemId: string) => Promise<void>;
+  /**
+   * Handing the controls over when a wall is not the agent's to climb.
+   *
+   * Absent on an install with no machine, in which case the route is refused
+   * rather than the whole server being unavailable — the same arrangement the
+   * vault and memory routes already have.
+   */
+  readonly handoff?: HandoffAccess;
+}
+
+/** What the live-view route needs. Supplied by whoever owns the machine. */
+export interface HandoffAccess {
+  /** The machine this grant is bound to, or undefined once it has been handed back. */
+  readonly machineFor: (scope: AccessScope, grantId: string) => HandoffMachine | undefined;
+  /** Called when the person says they are finished, so the agent resumes. */
+  readonly finish: (scope: AccessScope, grantId: string) => void;
 }
 
 export interface VaultForm {
@@ -124,6 +162,18 @@ export interface VaultForm {
   ) => string;
   /** A one-time link to read and edit `MEMORY.md`. */
   readonly memoryLink: (scope: AccessScope) => string;
+  /**
+   * A one-time link that hands the browser to the person.
+   *
+   * `reason` is shown before they open it and is bound into the grant, so a link
+   * minted to clear a CAPTCHA cannot be presented as something else.
+   */
+  readonly handoffLink: (
+    scope: AccessScope,
+    grantId: string,
+    reason: string,
+    site: string
+  ) => string;
   readonly close: () => Promise<void>;
 }
 
@@ -147,7 +197,7 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
     // Parsed against a fixed base so a malformed URL cannot throw here, and so
     // the query is read the same way whatever the client sent.
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    const route = /^\/([vm])\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname);
+    const route = /^\/([vmh])\/([A-Za-z0-9_-]{16,128})(?:\/(shot|act))?$/u.exec(url.pathname);
     const token = route?.[2];
     const entry = token ? find(pending, token) : undefined;
     const form = formFor(url.searchParams.get("kind"));
@@ -173,6 +223,70 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
      * `MEMORY.md` could be read and never corrected — and a memory you cannot
      * correct is one you have to trust rather than check.
      */
+    /**
+     * The live view: look at the machine, and touch it.
+     *
+     * Kept on this server rather than given one of its own, because everything
+     * that makes it safe is already here — the loopback bind, the `Host` check
+     * that ends DNS rebinding before a token is read, and the expiring
+     * single-purpose link. A second server would be a second place to get all
+     * three right.
+     */
+    if (route?.[1] === "h") {
+      const handoff = entry.value.handoff;
+      if (!options.handoff || !handoff) return plain(response, 404, "No handoff here.");
+
+      const machine = options.handoff.machineFor(entry.value.scope, handoff.grantId);
+      if (!machine) {
+        return plain(response, 410, "That handoff is over. Nell has the controls back.");
+      }
+
+      const action = route[3];
+
+      if (action === "shot") {
+        const shot = await machine.screenshot();
+        if (!shot) return plain(response, 503, "");
+        response.writeHead(200, {
+          "content-type": "text/plain",
+          // A screenshot is the live state of a signed-in browser. It must not
+          // sit in a cache for the next person on this machine.
+          "cache-control": "no-store",
+        });
+        return void response.end(shot);
+      }
+
+      if (action === "act") {
+        if (request.method !== "POST") return plain(response, 405, "No.");
+        const body = await read(request);
+        if (body === undefined) return plain(response, 413, "Too much.");
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          return plain(response, 400, "No.");
+        }
+
+        const command = readCommand(parsed);
+        if (!command) return plain(response, 400, "No.");
+
+        if (command.do === "finish") {
+          // Burned here, and only here: the takeover is over, so the link is too.
+          pending.delete(entry.key);
+          options.handoff.finish(entry.value.scope, handoff.grantId);
+          return plain(response, 200, "ok");
+        }
+
+        const act = actionFor(command);
+        if (act) await machine.act(act);
+        return plain(response, 200, "ok");
+      }
+
+      if (request.method !== "GET") return plain(response, 405, "No.");
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      return void response.end(handoffPage(entry.key, handoff.reason, handoff.site));
+    }
+
     if (route?.[1] === "m") {
       if (!options.memory) return plain(response, 404, "Memory editing is not enabled.");
 
@@ -317,6 +431,24 @@ export async function startVaultForm(options: VaultFormOptions): Promise<VaultFo
         expiresAt: now() + LINK_TTL_MS,
       });
       return `http://127.0.0.1:${String(addressOf(server, port))}/m/${token}`;
+    },
+    handoffLink: (scope, grantId, reason, site) => {
+      const token = randomBytes(32).toString("base64url");
+      pending.set(token, {
+        scope,
+        origin: site,
+        username: "",
+        /**
+         * Longer than a vault link, and still short.
+         *
+         * A vault link is opened, filled and submitted; a handoff is *held* for
+         * as long as it takes somebody to solve a puzzle a computer cannot. Ten
+         * minutes covers picking up a phone and getting it wrong twice.
+         */
+        expiresAt: now() + HANDOFF_TTL_MS,
+        handoff: { grantId, reason, site },
+      });
+      return `http://127.0.0.1:${String(addressOf(server, port))}/h/${token}`;
     },
     close: () =>
       new Promise<void>((resolve) => {

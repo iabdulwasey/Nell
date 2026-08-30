@@ -101,6 +101,14 @@ export interface LoopRequest {
    * as an argument for a goal nobody has any more.
    */
   readonly steering?: () => readonly Steer[];
+  /**
+   * Offer the controls when a page refuses automation, returning a link.
+   *
+   * A callback rather than a capability, so this file knows nothing about
+   * loopback servers or grants — and so an install with no machine simply does
+   * not pass one, and the agent explains the wall as it always did.
+   */
+  readonly offerHandoff?: (url: string) => Promise<string | undefined>;
   /** Aborts the task between steps, because the user asked it to stop. */
   readonly signal?: AbortSignal;
 }
@@ -440,10 +448,28 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
      */
     const block = detectBlock(snapshot);
     if (block.blocked) {
+      /**
+       * A wall the agent cannot climb — so offer the controls instead.
+       *
+       * The reply here has said *"if you open it yourself I can carry on from
+       * where you get to"* for weeks, describing a handoff that existed in
+       * `@nell/aegis` and was reachable from nothing. A sentence offering a
+       * feature nobody can use is worse than saying "I'm stuck".
+       *
+       * Only for a challenge, not for a network policy: a filter refusing this
+       * machine will refuse the person on it too, and handing them a browser to
+       * watch fail would waste their time politely.
+       */
+      const takeover =
+        block.kind === "challenge" ? await request.offerHandoff?.(snapshot.url) : undefined;
+
       return {
         ok: false,
         steps: step,
-        reason: explainBlock(block, snapshot.url),
+        reason: takeover
+          ? `${hostOf(snapshot.url)} wants a person, not an agent. Open this and clear it — ` +
+            `I'll pick up where you leave off:\n\n${takeover}`
+          : explainBlock(block, snapshot.url),
       };
     }
 

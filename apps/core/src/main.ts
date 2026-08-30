@@ -6,9 +6,10 @@
  * is harder to diagnose than one that will not boot.
  */
 
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BrowserExecutor } from "@nell/aegis";
+import { BrowserExecutor, mintHandoff, type HandoffGrant } from "@nell/aegis";
 import { keysFromEnv, providerFor } from "@nell/agent";
 import { LocalBrowserProvider, LocalMachineHost } from "@nell/browser/adapters";
 import { accessScopeForUser } from "@nell/shared";
@@ -25,6 +26,7 @@ import {
   type PageCapture,
 } from "@nell/agent";
 import { drawerFor, overridesFromEnv } from "./assignment.js";
+import { handoffMachine } from "./handoff-view.js";
 import { userChoiceAllowed } from "./workspace-models.js";
 import { EnvKeyProvider } from "@nell/vault";
 import { auditSink, readAudit } from "./audit-store.js";
@@ -373,6 +375,26 @@ const specialists = [
  * Only started when there is a key to encrypt with — a form that collects
  * credentials and has nowhere to put them is worse than no form.
  */
+/**
+ * Grants that are live right now, and the machine each one is holding.
+ *
+ * In memory on purpose. A takeover is measured in minutes and the browser it
+ * refers to is a process on this computer — a grant surviving a restart would
+ * point at a machine that no longer exists, and the honest behaviour after a
+ * restart is that the person asks again.
+ */
+const takeovers = new Map<string, { readonly sessionId: string; readonly grant: HandoffGrant }>();
+
+/**
+ * The pepper for handoff tokens.
+ *
+ * Derived from the vault key where there is one, so a token hash cannot be
+ * checked by anyone who has not already got the thing that decrypts passwords.
+ * Falls back to a per-process random value, which is the right failure: grants
+ * simply do not survive a restart, and nothing is stored weakly.
+ */
+const handoffPepper = process.env["SECRET_ENCRYPTION_KEY"] ?? randomBytes(32).toString("base64");
+
 const form = await startVaultForm({
   pool,
   ...(vaultKeys ? { keys: vaultKeys } : {}),
@@ -384,6 +406,32 @@ const form = await startVaultForm({
    * you have to trust rather than check. Served here rather than in the chat
    * because a document is a poor thing to edit one message at a time.
    */
+  /**
+   * Looking at the machine, and touching it — see `handoff-view.ts`.
+   *
+   * The page gets a *narrowed* view of the host: screenshot and act, nothing
+   * else. Handing it the machine itself would hand it navigation and destroy.
+   */
+  handoff: {
+    machineFor: (_scope, grantId) => {
+      const live = takeovers.get(grantId);
+      return live ? handoffMachine(browser, _scope, live.sessionId) : undefined;
+    },
+    finish: (_scope, grantId) => {
+      const live = takeovers.get(grantId);
+      if (!live) return;
+      takeovers.delete(grantId);
+      /**
+       * The session is tainted for that origin on the way back.
+       *
+       * We do not know what the person did while they held it — they may have
+       * typed a password or a one-time code — so the mechanical routes a secret
+       * could take back to the model are closed until the page navigates away.
+       */
+      executor.takeBack(live.sessionId, live.grant.origin);
+      console.log(`  handoff returned: ${live.grant.reason}`);
+    },
+  },
   memory: {
     read: async (scope) =>
       withWorkspace(
@@ -584,6 +632,62 @@ await run(
     capabilities: new Set<Capability>(anthropicKey ? ["assist", "browse"] : ["browse"]),
     /** What was done, chained so an edit to the record is detectable. */
     audit: (scope) => readAudit(pool, scope),
+    /**
+     * Hand the browser to the person when a page refuses automation.
+     *
+     * The grant machinery has existed in `@nell/aegis` since v1 and was reached
+     * by nothing — the tenth thing in this repo found built, tested and never
+     * run. It stayed unreachable for a real reason rather than an oversight:
+     * the design assumes a cloud browser with a live-view URL, and a local
+     * Chromium has none. So the answer was to build the live view out of the two
+     * things the machine could already do — photograph itself, and be clicked.
+     */
+    offerHandoff: async (scope, url) => {
+      /**
+       * The session the task is already on, not a new one.
+       *
+       * `acquire` returns the workspace's held browser, which is the one that
+       * hit the wall — a fresh session would put the person on a login screen
+       * and solve nothing.
+       */
+      const session = await sessions.acquire(scope).catch(() => undefined);
+      if (!session) return undefined;
+
+      const minted = mintHandoff({
+        workspaceId: scope.workspaceId,
+        machineId: session.id,
+        taskId: session.id,
+        reason: "captcha",
+        origin: new URL(url).origin,
+        pepper: handoffPepper,
+        now: Date.now(),
+      });
+
+      takeovers.set(minted.grant.id, { sessionId: session.id, grant: minted.grant });
+      /**
+       * The agent stops the moment the link is minted, not when the person
+       * opens it. Two parties on one pointer would fight, and worse, the agent
+       * could act inside a state the person authenticated and the policy engine
+       * never saw.
+       */
+      executor.handOver(session.id, minted.grant, Date.now());
+
+      await audit.record({
+        action: "message.outbound",
+        subject: new URL(url).host,
+        // The token is never written down, here or anywhere. The grant id is
+        // enough to tie this to the take-back that follows it.
+        detail: { handoff: minted.grant.id, reason: minted.grant.reason },
+        at: stamp(),
+      });
+
+      return form.handoffLink(
+        scope,
+        minted.grant.id,
+        "It wants a person, not a bot.",
+        new URL(url).host
+      );
+    },
     /**
      * A deletion goes into the chain, and the chain survives the deletion.
      *

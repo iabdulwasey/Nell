@@ -105,6 +105,8 @@ export interface PipelineRequest {
   readonly files: readonly StoredFile[];
   readonly profile?: string;
   readonly steering?: () => readonly Steer[];
+  /** Offer the controls when a page refuses automation. See the loop. */
+  readonly offerHandoff?: (url: string) => Promise<string | undefined>;
   readonly signal?: AbortSignal;
 }
 
@@ -329,6 +331,7 @@ export async function runPipeline(
                   : step.instruction,
                 ...(request.profile ? { profile: request.profile } : {}),
                 ...(request.steering ? { steering: request.steering } : {}),
+                ...(request.offerHandoff ? { offerHandoff: request.offerHandoff } : {}),
                 ...(request.signal ? { signal: request.signal } : {}),
                 ...(deps.onStep ? { onStep: deps.onStep } : {}),
                 ...(deps.onDiagnostic ? { onDiagnostic: deps.onDiagnostic } : {}),

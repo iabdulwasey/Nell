@@ -49,7 +49,27 @@ services:
       - "${CORE_PORT:-4000}:4000"
     restart: unless-stopped
 
-  # web:      enabled in v1, once the dashboard exists
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://nell_app:${NELL_APP_PASSWORD:-nell_app}@postgres:5432/${POSTGRES_DB:-nell}
+      # The dashboard shows one owner's data, and knows whose by the same id the
+      # agent answers to.
+      NELL_OWNER_TELEGRAM_ID: ${NELL_OWNER_TELEGRAM_ID:-}
+      NELL_MODEL: ${NELL_MODEL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Published on loopback, not on every interface. The page shows tasks,
+      # vault item *names* and an audit log; it has authentication, and the
+      # binding is the wall in front of that rather than a substitute for it.
+      # Someone who wants it on their network is changing this line on purpose.
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    restart: unless-stopped
+
   # browser:  local Chromium sidecar, enabled with the browser adapter
 
 volumes:

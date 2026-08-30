@@ -7,7 +7,7 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev --port 3000",
-    "start": "next start",
+    "start": "next start --hostname ${NELL_WEB_HOST:-127.0.0.1} --port ${NELL_WEB_PORT:-3000}",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
