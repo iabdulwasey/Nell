@@ -8,6 +8,8 @@
  * Governed by: docs/architecture.md
  */
 
+export { captureTool, type CaptureToolOptions, type PageCapture } from "./capture-tool.js";
+
 export {
   MAX_TOOL_RESULTS,
   searchTool,

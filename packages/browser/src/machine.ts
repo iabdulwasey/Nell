@@ -120,6 +120,23 @@ export interface MachineHost {
    */
   download(machineId: string, url: string, options?: DownloadOptions): Promise<Downloaded>;
 
+  /**
+   * A picture of a page as a browser renders it.
+   *
+   * Distinct from `download`, which returns what the server sent. A live radar
+   * map, a seat plan, a chart drawn in JavaScript — for those the *rendering* is
+   * the information, and the bytes behind it are a bundle nobody can read. This
+   * is the only way to answer "show me" for most of the modern web.
+   *
+   * Worth being clear that this is evidence rather than transaction: no session,
+   * no logins, nothing clicked. It is the agent looking at a public page so it
+   * can hand the person the thing it looked at, instead of paraphrasing it.
+   *
+   * `allow` guards every request the page makes, exactly as `download` does —
+   * a page that pulls in an image from the metadata endpoint is the same attack.
+   */
+  capture(machineId: string, url: string, options?: CaptureUrlOptions): Promise<Captured>;
+
   /** Irreversible. Disk and all sessions on it are gone. */
   destroy(machineId: string): Promise<void>;
 }
@@ -136,6 +153,29 @@ export interface Downloaded {
   readonly bytes: Uint8Array;
   /** Where it ended up, which is not always where it was sent. */
   readonly finalUrl: string;
+}
+
+export interface CaptureUrlOptions {
+  /** Asked of every request; a `false` aborts it. */
+  readonly allow?: (url: string) => Promise<boolean>;
+  /**
+   * How long to let the page settle before looking.
+   *
+   * Not padding. A map, a chart or anything drawn in JavaScript is blank at
+   * `domcontentloaded`, so a screenshot taken then is a picture of a loading
+   * spinner — which looks like a working feature and answers nothing.
+   */
+  readonly settleMs?: number;
+  /** The whole scrollable page rather than the window. */
+  readonly fullPage?: boolean;
+}
+
+export interface Captured {
+  /** PNG bytes. */
+  readonly bytes: Uint8Array;
+  readonly finalUrl: string;
+  /** The page's own title, which names the picture better than a URL does. */
+  readonly title: string;
 }
 
 /** How long a machine sits warm after its last use before suspending. */

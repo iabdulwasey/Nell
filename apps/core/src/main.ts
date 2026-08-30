@@ -14,6 +14,7 @@ import { LocalBrowserProvider, LocalMachineHost } from "@nell/browser/adapters";
 import { accessScopeForUser } from "@nell/shared";
 import { anthropicSearchProvider } from "@nell/integrations";
 import {
+  captureTool,
   checkUrl,
   fetchTool,
   imageTool,
@@ -21,6 +22,7 @@ import {
   searchTool,
   type BrowserFetch,
   type Capability,
+  type PageCapture,
 } from "@nell/agent";
 import { drawerFor, overridesFromEnv } from "./assignment.js";
 import { EnvKeyProvider } from "@nell/vault";
@@ -321,8 +323,29 @@ const assist = ((): { apiKey: string; model: string; baseUrl?: string } | undefi
   };
 })();
 
+/**
+ * Looking at a page, on the same machine that holds nothing.
+ *
+ * A live radar map, a chart, a departures board — the *rendering* is the
+ * information and the bytes behind it are a JavaScript bundle. Same scratch
+ * machine as the downloader and for the same reason: a model-chosen URL must
+ * not be opened by a browser signed into the user's accounts.
+ */
+const viaScreenshot: PageCapture = async (url, captureOptions) => {
+  const machine = await scratchHost.provision("captures", { scratch: true });
+  try {
+    return await scratchHost.capture(machine.id, url, {
+      allow: async (candidate) => (await checkUrl(candidate)).ok,
+      ...(captureOptions?.fullPage === true ? { fullPage: true } : {}),
+    });
+  } finally {
+    await scratchHost.destroy(machine.id).catch(() => undefined);
+  }
+};
+
 const specialists = [
   fetchTool({ viaBrowser }),
+  captureTool({ capture: viaScreenshot }),
   /**
    * Search as a tool, not as a vendor feature.
    *

@@ -5,6 +5,7 @@ import {
   MachineRegistry,
   type ActOutcome,
   type ComputerAction,
+  type Captured,
   type Downloaded,
   type Machine,
   type MachineHost,
@@ -56,6 +57,13 @@ class FakeHost implements MachineHost {
 
   async act(_machineId: string, _action: ComputerAction): Promise<ActOutcome> {
     return { currentOrigin: "https://example.com", currentUrl: "https://example.com/" };
+  }
+
+  captured: string[] = [];
+
+  async capture(_machineId: string, url: string): Promise<Captured> {
+    this.captured.push(url);
+    return { bytes: new Uint8Array([137, 80, 78, 71]), finalUrl: url, title: "a page" };
   }
 
   downloaded: string[] = [];

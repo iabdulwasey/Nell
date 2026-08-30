@@ -51,6 +51,8 @@ export {
   MachineRegistry,
   type ActOutcome,
   type DestroyReceipt,
+  type Captured,
+  type CaptureUrlOptions,
   type Downloaded,
   type DownloadOptions,
   type Machine,

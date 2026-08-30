@@ -27,7 +27,15 @@ import {
   type CoordinateSpace,
   type Point,
 } from "../computer.js";
-import type { ActOutcome, Downloaded, DownloadOptions, Machine, MachineHost } from "../machine.js";
+import type {
+  ActOutcome,
+  Captured,
+  CaptureUrlOptions,
+  Downloaded,
+  DownloadOptions,
+  Machine,
+  MachineHost,
+} from "../machine.js";
 import { runComputerActions, type CaptureOptions } from "./computer-exec.js";
 
 export interface LocalMachineOptions {
@@ -214,6 +222,48 @@ export class LocalMachineHost implements MachineHost {
           .trim(),
         bytes,
         finalUrl: response.url(),
+      };
+    } finally {
+      if (allow) await live.page.unroute("**/*");
+    }
+  }
+
+  /** A picture of a rendered page. See `MachineHost.capture`. */
+  async capture(
+    machineId: string,
+    url: string,
+    options: CaptureUrlOptions = {}
+  ): Promise<Captured> {
+    if (!isNavigable(url)) throw new Error("A capture must be an http(s) URL.");
+
+    const live = this.#live.get(machineId) ?? (await this.#launch(machineId));
+    const { allow } = options;
+
+    if (allow) {
+      await live.page.route("**/*", async (route) => {
+        if (await allow(route.request().url())) await route.continue();
+        else await route.abort("blockedbyclient");
+      });
+    }
+
+    try {
+      /**
+       * `load` rather than `domcontentloaded`, then a settle.
+       *
+       * The whole point of this method is pages whose content is drawn after
+       * the document exists — maps, charts, anything live. Screenshotting at
+       * `domcontentloaded` reliably captures a spinner, which is worse than
+       * failing because it looks like it worked.
+       */
+      await live.page.goto(url, { waitUntil: "load" }).catch(() => undefined);
+      await live.page.waitForTimeout(options.settleMs ?? 2500);
+
+      return {
+        bytes: new Uint8Array(
+          await live.page.screenshot({ type: "png", fullPage: options.fullPage ?? false })
+        ),
+        finalUrl: live.page.url(),
+        title: await live.page.title().catch(() => ""),
       };
     } finally {
       if (allow) await live.page.unroute("**/*");
