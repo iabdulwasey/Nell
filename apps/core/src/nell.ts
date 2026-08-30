@@ -58,6 +58,7 @@ import {
 } from "./profile.js";
 import { decideFollowUp } from "./follow-up.js";
 import { classifyMidTask, type MidTaskIntent } from "./mid-task.js";
+import { assignmentFor, listKeys } from "./workspace-models.js";
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createFollowUp, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
@@ -136,6 +137,14 @@ export interface NellOptions {
   readonly assignment?: Readonly<Partial<Record<ModelCapability, string>>>;
   /** Vendors this install has a key for, so settings can suggest the missing one. */
   readonly vendorKeys: ReadonlySet<string>;
+  /**
+   * Whether a workspace may choose its own models and bring its own keys.
+   *
+   * An operator selling a service has a real reason to say no — their margin
+   * depends on which models run. Defaults to yes, because the common deployment
+   * is one person running it for themselves.
+   */
+  readonly allowUserModels?: boolean;
   /**
    * The vault, when this install has a key for it.
    *
@@ -296,13 +305,34 @@ export async function handleMessage(
        * cannot draw by asking for a picture and being told no. Told up front, it
        * is a decision about which key to add.
        */
+      await ensureWorkspace(options, scope);
+
+      /**
+       * This workspace's answer, not the process's.
+       *
+       * `/models` described the operator's configuration to everybody, which was
+       * right while one process served one person and wrong the moment it serves
+       * two. The merge lives in `assignmentFor`, so what this prints and what
+       * actually runs are one computation.
+       */
+      const mine = await withWorkspace(options.pool, scope, (client) =>
+        assignmentFor(
+          client,
+          scope,
+          {
+            defaultModel: options.modelId,
+            ...(options.assignment ? { overrides: options.assignment } : {}),
+          },
+          options.allowUserModels ?? true
+        )
+      );
+
+      const ownKeys = await withWorkspace(options.pool, scope, (client) => listKeys(client, scope));
+
       await reply(
         describeCapabilities(
           capabilityReport(
-            {
-              defaultModel: options.modelId,
-              ...(options.assignment ? { overrides: options.assignment } : {}),
-            },
+            mine,
             /**
              * The same lookup the picture tool is built from.
              *
@@ -311,9 +341,14 @@ export async function handleMessage(
              * was told it could not draw.
              */
             catalogLookup,
-            options.vendorKeys
+            // The operator's keys plus this workspace's own, because a
+            // capability needs a model and a key and either layer can supply it.
+            new Set([...options.vendorKeys, ...ownKeys.map((entry) => entry.vendor)])
           )
-        )
+        ) +
+          (ownKeys.length > 0
+            ? `\n\nYour own keys: ${ownKeys.map((entry) => `${entry.vendor} …${entry.hint}`).join(", ")}`
+            : "")
       );
     } else if (command === "/remember") {
       await ensureWorkspace(options, scope);

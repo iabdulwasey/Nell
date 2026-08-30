@@ -43,6 +43,13 @@
       "when": 1788079535170,
       "tag": "0005_faithful_exiles",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788113978453,
+      "tag": "0006_shiny_old_lace",
+      "breakpoints": true
     }
   ]
 }

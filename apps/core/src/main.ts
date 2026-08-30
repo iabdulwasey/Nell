@@ -25,6 +25,7 @@ import {
   type PageCapture,
 } from "@nell/agent";
 import { drawerFor, overridesFromEnv } from "./assignment.js";
+import { userChoiceAllowed } from "./workspace-models.js";
 import { EnvKeyProvider } from "@nell/vault";
 import { auditSink, readAudit } from "./audit-store.js";
 import { installDurableTasks, shutdownDurableTasks } from "./durable-tasks.js";
@@ -534,6 +535,14 @@ await run(
      * per-capability choice an admin had made.
      */
     ...(Object.keys(assignment.overrides).length > 0 ? { assignment: assignment.overrides } : {}),
+    /**
+     * Whether a workspace may choose for itself.
+     *
+     * The operator's policy about the whole deployment, read from the
+     * environment rather than a row — a per-tenant switch controlling whether
+     * tenants may switch things is a circle.
+     */
+    allowUserModels: userChoiceAllowed(process.env),
     ...(assist
       ? {
           assistKey: assist.apiKey,

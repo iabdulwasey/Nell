@@ -430,3 +430,58 @@ export const TENANT_TABLES = [
   "messages",
   "audit_log",
 ] as const;
+
+/**
+ * Provider API keys and model choice, per workspace.
+ *
+ * The commercial case the architecture describes and nothing implemented: an
+ * operator hosting for hundreds of people, whose keys serve everyone by default,
+ * where a workspace may bring its own and choose its own models. Self-host is
+ * the same code with the workspace layer simply unused.
+ *
+ * **Deliberately not a vault item, and the distinction is the threat model.** A
+ * vault item is a credential for *somebody else's website*, typed into a page by
+ * a browser — so it is origin-bound, taints the session, and is masked in every
+ * capture afterwards. An API key is used by this process to call a vendor: it is
+ * never typed, never reaches a page, and has no origin to be bound to. Giving it
+ * a vault kind would drag it through machinery none of which applies, and the
+ * one thing that genuinely transfers — the envelope crypto — transfers anyway,
+ * under its own namespace so the AAD keeps the two from being swapped.
+ *
+ * The key is stored encrypted; the model choice is not, because a model id is
+ * not a secret and pretending otherwise makes it unreadable in the one place a
+ * person wants to read it.
+ */
+export const workspaceModels = pgTable("workspace_models", {
+  workspaceId: text("workspace_id")
+    .primaryKey()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  /** Overrides the operator's default. Null means "use whatever they set". */
+  defaultModel: text("default_model"),
+  /** Per-capability overrides, merged over the operator's. */
+  overrides: jsonb("overrides").notNull().default({}),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const workspaceKeys = pgTable(
+  "workspace_keys",
+  {
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /** `openai`, `anthropic`, … — the vendor, which is what a key unlocks. */
+    vendor: text("vendor").notNull(),
+    /** Envelope-encrypted, same crypto as the vault under its own namespace. */
+    ciphertext: text("ciphertext").notNull(),
+    /**
+     * The last four characters, so a person can tell which key this is.
+     *
+     * The whole of what a settings screen ever needs: enough to recognise, never
+     * enough to use. Stored rather than derived because deriving it would mean
+     * decrypting to render a list.
+     */
+    hint: text("hint").notNull(),
+    addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("workspace_keys_vendor_idx").on(table.workspaceId, table.vendor)]
+);
