@@ -21,10 +21,13 @@ import {
 
 describe("which format a model speaks", () => {
   it("routes by the vendor half of the catalog id", () => {
-    expect(assistDialect("openai/gpt-5.6")).toEqual({
+    expect(assistDialect("openai/gpt-5.6", "http://localhost:1234/v1")).toEqual({
       vendor: "openai",
       model: "gpt-5.6",
       anthropic: false,
+      // A base URL means an OpenAI-*compatible* server, which speaks chat
+      // completions and does not implement the Responses API.
+      responses: false,
     });
     expect(assistDialect("anthropic/claude-sonnet-5").anthropic).toBe(true);
   });
@@ -39,6 +42,7 @@ describe("which format a model speaks", () => {
       vendor: "anthropic",
       model: "claude-sonnet-4-5",
       anthropic: true,
+      responses: false,
     });
   });
 

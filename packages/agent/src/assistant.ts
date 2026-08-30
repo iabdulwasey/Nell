@@ -37,6 +37,13 @@ import {
   toOpenAiMessages,
   toOpenAiTools,
 } from "./assist-openai.js";
+import {
+  downloadContainerFile,
+  foldResponsesOutput,
+  toResponsesInput,
+  toResponsesTools,
+  type ContainerFile,
+} from "./assist-responses.js";
 import { stampToday } from "./provider.js";
 
 /**
@@ -130,17 +137,44 @@ export interface AssistRequest {
  * calling, which has neither — search is supplied as a client tool instead, and
  * running code is genuinely unavailable rather than quietly degraded.
  */
-export function assistDialect(model: string): {
+export function assistDialect(
+  model: string,
+  /**
+   * A base URL means an OpenAI-*compatible* endpoint, not OpenAI.
+   *
+   * Caught by the gate rather than shipped: routing on the vendor alone sent a
+   * self-hosted server — an `openai/…` id pointed at somebody's own hardware —
+   * to `/v1/responses`, which such a server does not implement. Compatibility is
+   * with chat completions; the Responses API is OpenAI's own.
+   */
+  baseUrl?: string
+): {
   readonly vendor: string;
   readonly model: string;
   readonly anthropic: boolean;
+  /**
+   * OpenAI's Responses API rather than chat completions.
+   *
+   * A third shape rather than an option on the second, because the code sandbox
+   * lives only here — chat completions has no container at all. One vendor, two
+   * endpoints, and the choice decides whether `code` works or silently does
+   * nothing.
+   */
+  readonly responses: boolean;
 } {
   const slash = model.indexOf("/");
   // A bare name means Anthropic, which is what every existing caller passed.
-  if (slash === -1) return { vendor: "anthropic", model, anthropic: true };
+  if (slash === -1) {
+    return { vendor: "anthropic", model, anthropic: true, responses: false };
+  }
 
   const vendor = model.slice(0, slash);
-  return { vendor, model: model.slice(slash + 1), anthropic: vendor === "anthropic" };
+  return {
+    vendor,
+    model: model.slice(slash + 1),
+    anthropic: vendor === "anthropic",
+    responses: vendor === "openai" && baseUrl === undefined,
+  };
 }
 
 export type AssistOutcome =
@@ -233,6 +267,15 @@ type StreamOutcome =
       readonly ok: true;
       readonly content: Record<string, unknown>[];
       readonly stopReason: string | undefined;
+      /**
+       * Files named by the reply but not carried in it.
+       *
+       * Only the Responses transport produces these: its container hands back a
+       * *citation* — a container id and a file id — and the bytes are a second
+       * call. A path that stopped at the citation would name a PDF nobody
+       * receives, which is a failure this codebase has already shipped once.
+       */
+      readonly containerFiles?: readonly ContainerFile[];
     }
   | { readonly ok: false; readonly reason: string; readonly retryable: boolean };
 
@@ -270,46 +313,12 @@ async function streamOnce(
     }, idleMs);
   };
 
-  const dialect = assistDialect(request.model);
+  const dialect = assistDialect(request.model, request.baseUrl);
 
   let response: Response;
   try {
-    response = dialect.anthropic
-      ? await fetchImpl("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          signal: controller.signal,
-          headers: {
-            "x-api-key": request.apiKey,
-            "anthropic-version": "2023-06-01",
-            "anthropic-beta": BETAS,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            model: dialect.model,
-            /**
-             * Generous, because the model writes the document *as code*.
-             *
-             * 8192 was fine for an answer and nowhere near a designed PDF: the whole
-             * text of the document is embedded in the Python that produces it, so a
-             * few pages of prose is a few thousand tokens of source before anything
-             * has run. It hit the ceiling mid-line, and the task came back looking
-             * successful.
-             */
-            max_tokens: request.maxTokens ?? 32_000,
-            /**
-             * Stamped here rather than by the caller, for the same reason the
-             * providers stamp theirs: `assist` is its own transport and never
-             * passes through `ModelProvider`, so it has to carry its own
-             * guarantee. A model that does not know the year searches for last
-             * year's answer and reports it confidently.
-             */
-            system: stampToday(request.system, new Date()),
-            ...(tools.length > 0 ? { tools } : {}),
-            messages,
-            stream: true,
-          }),
-        })
-      : await fetchImpl(`${request.baseUrl ?? baseUrlFor(dialect.vendor) ?? ""}/chat/completions`, {
+    response = dialect.responses
+      ? await fetchImpl("https://api.openai.com/v1/responses", {
           method: "POST",
           signal: controller.signal,
           headers: {
@@ -318,12 +327,71 @@ async function streamOnce(
           },
           body: JSON.stringify({
             model: dialect.model,
-            max_tokens: request.maxTokens ?? 32_000,
-            messages: toOpenAiMessages(stampToday(request.system, new Date()), messages),
-            ...(request.tools?.length ? { tools: toOpenAiTools(request.tools) } : {}),
+            max_output_tokens: request.maxTokens ?? 32_000,
+            // `instructions` rather than a system message: this endpoint keeps
+            // them apart, and a system turn in `input` is treated as content.
+            instructions: stampToday(request.system, new Date()),
+            input: toResponsesInput(messages),
+            tools: toResponsesTools(request.tools ?? [], {
+              search: request.search === true,
+              code: request.code === true,
+            }),
             stream: true,
           }),
-        });
+        })
+      : dialect.anthropic
+        ? await fetchImpl("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              "x-api-key": request.apiKey,
+              "anthropic-version": "2023-06-01",
+              "anthropic-beta": BETAS,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              model: dialect.model,
+              /**
+               * Generous, because the model writes the document *as code*.
+               *
+               * 8192 was fine for an answer and nowhere near a designed PDF: the whole
+               * text of the document is embedded in the Python that produces it, so a
+               * few pages of prose is a few thousand tokens of source before anything
+               * has run. It hit the ceiling mid-line, and the task came back looking
+               * successful.
+               */
+              max_tokens: request.maxTokens ?? 32_000,
+              /**
+               * Stamped here rather than by the caller, for the same reason the
+               * providers stamp theirs: `assist` is its own transport and never
+               * passes through `ModelProvider`, so it has to carry its own
+               * guarantee. A model that does not know the year searches for last
+               * year's answer and reports it confidently.
+               */
+              system: stampToday(request.system, new Date()),
+              ...(tools.length > 0 ? { tools } : {}),
+              messages,
+              stream: true,
+            }),
+          })
+        : await fetchImpl(
+            `${request.baseUrl ?? baseUrlFor(dialect.vendor) ?? ""}/chat/completions`,
+            {
+              method: "POST",
+              signal: controller.signal,
+              headers: {
+                authorization: `Bearer ${request.apiKey}`,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({
+                model: dialect.model,
+                max_tokens: request.maxTokens ?? 32_000,
+                messages: toOpenAiMessages(stampToday(request.system, new Date()), messages),
+                ...(request.tools?.length ? { tools: toOpenAiTools(request.tools) } : {}),
+                stream: true,
+              }),
+            }
+          );
   } catch (error) {
     clearTimeout(idle);
     return {
@@ -378,6 +446,60 @@ async function streamOnce(
    * against them, the other sends fragments against choice indices. Interleaving
    * them would produce a state machine nobody could read.
    */
+  /**
+   * The Responses stream: read for liveness, and read once more for truth.
+   *
+   * Every event resets the idle clock, which is what makes a five-minute job
+   * distinguishable from a hang. The *content* comes from `response.completed`,
+   * which carries the whole output including the annotations that name the
+   * files. Reassembling that from deltas would be a second parser of the same
+   * data, and the file-bearing path would be the one exercised least.
+   */
+  if (dialect.responses) {
+    let completed: unknown;
+    try {
+      for await (const event of sse(response.body)) {
+        alive();
+        const type = event["type"];
+        if (type === "response.completed" || type === "response.incomplete") {
+          completed = event["response"];
+        }
+        if (type === "error") {
+          clearTimeout(idle);
+          return {
+            ok: false,
+            reason: `the model errored: ${String(event["message"] ?? "")}`,
+            retryable: true,
+          };
+        }
+      }
+    } catch (error) {
+      clearTimeout(idle);
+      return {
+        ok: false,
+        reason: controller.signal.aborted
+          ? "nothing happened for five minutes, so I stopped"
+          : error instanceof Error
+            ? error.message
+            : "the stream broke",
+        retryable: true,
+      };
+    }
+
+    clearTimeout(idle);
+    if (completed === undefined) {
+      return { ok: false, reason: "the model's reply ended without finishing", retryable: true };
+    }
+
+    const folded = foldResponsesOutput(completed);
+    return {
+      ok: true,
+      content: folded.content,
+      stopReason: folded.stopReason,
+      containerFiles: folded.files,
+    };
+  }
+
   if (!dialect.anthropic) {
     const events: Record<string, unknown>[] = [];
     try {
@@ -523,7 +645,7 @@ async function* sse(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<str
 export async function assist(request: AssistRequest): Promise<AssistOutcome> {
   const fetchImpl = request.fetchImpl ?? fetch;
 
-  const dialect = assistDialect(request.model);
+  const dialect = assistDialect(request.model, request.baseUrl);
 
   if (!dialect.anthropic && !request.baseUrl && !baseUrlFor(dialect.vendor)) {
     return {
@@ -706,6 +828,19 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
           if (item.type === "code_execution_output" && item.file_id) fileIds.push(item.file_id);
         }
       }
+    }
+
+    /**
+     * Fetch what the container wrote, before anything reads the reply.
+     *
+     * The citation names the file; the bytes are a second call. Doing it here
+     * rather than at the end means the "it claimed a file and produced none"
+     * check below is judging the same reality the user will see.
+     */
+    for (const cited of streamed.containerFiles ?? []) {
+      const fetched = await downloadContainerFile(cited, request.apiKey, fetchImpl);
+      if (fetched) files.push(fetched);
+      else request.onDiagnostic?.(`could not fetch ${cited.filename} from the container`);
     }
 
     for (const [index, id] of fileIds.entries()) {

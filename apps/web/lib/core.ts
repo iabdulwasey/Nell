@@ -405,7 +405,7 @@ export const CAPABILITY_ROUTING: Readonly<Record<ModelCapability, string | undef
     "Runs on the default model, whichever vendor it is: searching is a tool Nell provides, " +
     "not something borrowed from the model's vendor.",
   code:
-    "Needs a vendor sandbox, which only Anthropic's models reach today. Nell will say it " +
+    "Needs a vendor sandbox — Anthropic's or OpenAI's. On a model with neither, Nell says it " +
     "cannot rather than describing a file it never made.",
   image: undefined,
   audio: "Nothing in Nell uses speech yet.",

@@ -77,6 +77,8 @@ import { FORMS } from "./vault-kinds.js";
 import type { CredentialOffer } from "./vault-secrets.js";
 import type { VaultItemSummary } from "./vault-store.js";
 import {
+  closeForumTopic,
+  openForumTopic,
   pollOnce,
   replyToStranger,
   sendDocument,
@@ -209,6 +211,13 @@ export interface Live {
    * names something that exists only in the last handful of steps.
    */
   readonly onNote?: (note: string) => void;
+  /**
+   * This task's own Telegram thread, once one has been opened.
+   *
+   * A function rather than a value because the topic is created *after* the
+   * handler starts — the title is the request, and the request is what starts it.
+   */
+  readonly topicId?: () => number | undefined;
   /** Aborts the task between steps. */
   readonly signal?: AbortSignal;
   /**
@@ -596,11 +605,25 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
    * that job. With one task in flight there is nothing to disambiguate and the
    * prefix is left off.
    */
+  /**
+   * A reply goes to the task's own thread when it has one.
+   *
+   * The `[label]` prefix was always a workaround for not having threads: with
+   * three tasks running, one flat conversation interleaves three and the reader
+   * sorts them out. A topic is the structural answer, and where a topic exists
+   * the prefix is redundant — the thread already says which task this is.
+   *
+   * It degrades rather than fails. Telegram allows topics only in a
+   * forum-enabled supergroup, so a private chat with the bot never gets one and
+   * keeps the prefix, which is exactly the behaviour it had before.
+   */
   const reply = (text: string) => {
-    const name = run.live?.label?.();
+    const topicId = run.live?.topicId?.();
+    const name = topicId === undefined ? run.live?.label?.() : undefined;
     return sendMessage({
       token: options.telegramToken,
       chatId: run.threadRef,
+      ...(topicId === undefined ? {} : { topicId }),
       text: name ? `[${name}] ${text}` : text,
     });
   };
@@ -899,6 +922,8 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
     await sendDocument({
       token: options.telegramToken,
       chatId: run.threadRef,
+      // Beside the work that produced it, not at the bottom of a shared thread.
+      ...(run.live?.topicId?.() === undefined ? {} : { topicId: run.live.topicId() }),
       path: file.path,
       name: file.name,
     });
@@ -1564,6 +1589,16 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
   let nextTaskNumber = 1;
 
   /**
+   * Whether this chat can have per-task threads at all.
+   *
+   * Starts hopeful and is turned off by the first refusal. Telegram allows
+   * forum topics only in a forum-enabled supergroup, so a private chat with the
+   * bot never gets them — and asking again for every task would be one failing
+   * API call per request, for ever.
+   */
+  let topicsWork = true;
+
+  /**
    * Resolved once for the poll loop, which needs a model of its own.
    *
    * Deciding what a mid-task message *wants* is a judgement, and the poll loop
@@ -1800,7 +1835,42 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
     /** The last few progress notes, so a correction can be judged against them. */
     const recentNotes: string[] = [];
 
+    /**
+     * This task's own thread, opened once the request is known.
+     *
+     * Undefined until Telegram answers, and undefined for ever in a chat that
+     * cannot have topics — which is most of them, since forums exist only in a
+     * supergroup. Every reader of this treats undefined as "use the flat
+     * thread", so the agent is unchanged outside a group rather than broken.
+     */
+    let topicId: number | undefined;
+
+    /**
+     * Opened before the handler runs, so even "On it." lands in the right place.
+     *
+     * Not awaited by the handler: a task must not wait on a group setting. If
+     * Telegram is slow or refuses, the first message or two go to the flat
+     * thread and the rest follow the topic, which is a better failure than
+     * delaying the acknowledgement everybody is waiting for.
+     */
+    if (topicsWork) {
+      void openForumTopic({
+        token: options.telegramToken,
+        chatId: message.envelope.threadRef,
+        title: message.envelope.text.trim().slice(0, 100) || "Task",
+      }).then((opened) => {
+        if (opened === undefined) {
+          // Asked once. A chat without forums will not grow them mid-session,
+          // and retrying per task would be a failing API call per request.
+          topicsWork = false;
+          return;
+        }
+        topicId = opened;
+      });
+    }
+
     const done = handleMessage(options, message, {
+      topicId: () => topicId,
       steering: () => steering.splice(0, steering.length),
       onNote: (note) => {
         recentNotes.push(note);
@@ -1835,6 +1905,15 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
       })
       .finally(() => {
         running.delete(key);
+        // Tidied away, so a long-lived group does not accumulate a topic per
+        // request ever made. Failure is silent: an open topic is untidy, not broken.
+        if (topicId !== undefined) {
+          void closeForumTopic({
+            token: options.telegramToken,
+            chatId: message.envelope.threadRef,
+            topicId,
+          });
+        }
       });
 
     if (workspaceId) {

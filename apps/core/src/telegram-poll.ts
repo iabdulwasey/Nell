@@ -251,7 +251,66 @@ export interface SendOptions {
   readonly token: string;
   readonly chatId: string;
   readonly text: string;
+  /**
+   * A forum topic to send into, so one task's updates stay together.
+   *
+   * The structural fix for the single most common complaint about this kind of
+   * product: with three tasks running, one flat thread interleaves three
+   * conversations and the reader has to sort them out. Absent in a private chat,
+   * where topics do not exist and the `[label]` prefix is the fallback.
+   */
+  readonly topicId?: number;
   readonly fetchImpl?: typeof fetch;
+}
+
+/**
+ * Open a thread of its own for a task.
+ *
+ * Returns undefined rather than throwing when the chat cannot have topics —
+ * which is most chats, since Telegram allows them only in a forum-enabled
+ * supergroup. A private chat with the bot never can, so this must degrade to the
+ * flat thread rather than making the agent unusable outside a group.
+ */
+export async function openForumTopic(options: {
+  readonly token: string;
+  readonly chatId: string;
+  readonly title: string;
+  readonly fetchImpl?: typeof fetch;
+}): Promise<number | undefined> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  try {
+    const response = await fetchImpl(
+      `https://api.telegram.org/bot${options.token}/createForumTopic`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: options.chatId, name: options.title.slice(0, 128) }),
+      }
+    );
+    if (!response.ok) return undefined;
+
+    const body = (await response.json()) as { result?: { message_thread_id?: number } };
+    return typeof body.result?.message_thread_id === "number"
+      ? body.result.message_thread_id
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Tidy the thread away once the task is over. Failure is not worth reporting. */
+export async function closeForumTopic(options: {
+  readonly token: string;
+  readonly chatId: string;
+  readonly topicId: number;
+  readonly fetchImpl?: typeof fetch;
+}): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  await fetchImpl(`https://api.telegram.org/bot${options.token}/closeForumTopic`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat_id: options.chatId, message_thread_id: options.topicId }),
+  }).catch(() => undefined);
 }
 
 /**
@@ -319,11 +378,14 @@ export async function sendDocument(options: {
   readonly path: string;
   readonly name: string;
   readonly caption?: string;
+  /** The task's own thread, so a file arrives beside the work that made it. */
+  readonly topicId?: number;
   readonly fetchImpl?: typeof fetch;
 }): Promise<boolean> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const form = new FormData();
   form.append("chat_id", options.chatId);
+  if (options.topicId !== undefined) form.append("message_thread_id", String(options.topicId));
   if (options.caption) form.append("caption", options.caption.slice(0, 1000));
   form.append("document", new Blob([readFileSync(options.path)]), options.name);
 
@@ -345,6 +407,7 @@ async function post(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       chat_id: options.chatId,
+      ...(options.topicId === undefined ? {} : { message_thread_id: options.topicId }),
       text,
       ...(parseMode ? { parse_mode: parseMode } : {}),
       link_preview_options: { is_disabled: true },

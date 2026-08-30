@@ -116,12 +116,11 @@ export const VENDOR_NAMES: Readonly<Record<string, string>> = {
  *
  * The distinction is the difference between a settings screen and a brochure,
  * and getting it wrong reintroduces the exact drift this file exists to remove.
- * OpenAI's Code Interpreter is real and Nell cannot reach it: that container
- * lives behind the Responses API and the assist path speaks chat completions, so
- * claiming `code` for OpenAI would put a *yes* on a row that fails when
- * somebody relies on it. Likewise Realtime audio and embeddings are real and
- * nothing in Nell consumes either, so promising them would be describing a
- * roadmap as a feature.
+ * Realtime audio and embeddings are real at more than one vendor and nothing in
+ * Nell consumes either, so listing them would be describing a roadmap as a
+ * feature. `code` was struck from OpenAI for exactly that reason and restored
+ * only once a transport existed that reaches the container — a capability moves
+ * here when Nell can **route** it, never when a vendor announces it.
  *
  * The happy consequence of search becoming a client tool: **every vendor that
  * can call a function can search**, because searching is Nell's HTTP call to a
@@ -140,9 +139,18 @@ export const VENDOR_CAPABILITIES: Readonly<Record<string, readonly ModelCapabili
    * Claude-default install is the case the settings screen must handle well.
    */
   anthropic: ["text", "vision", "search", "code"],
-  // `gpt-image-*` for pictures. Not `code`: the Code Interpreter container is
-  // behind the Responses API, which the assist path does not speak yet.
-  openai: ["text", "vision", "search", "image"],
+  /**
+   * Everything except audio and embeddings, which nothing here consumes.
+   *
+   * `code` is back, and it took a third transport to earn it: the Code
+   * Interpreter container lives behind the Responses API, which is a different
+   * endpoint from chat completions with a different request shape and a
+   * different way of handing files back. The line was removed when that was
+   * unreachable and is restored now it is not — which is the discipline this
+   * table needs, since a capability listed here is a promise the settings screen
+   * repeats.
+   */
+  openai: ["text", "vision", "search", "code", "image"],
   // Gemini Image, after Imagen was retired in favour of it in August 2026.
   google: ["text", "vision", "search", "image"],
   // Grok Imagine for pictures.

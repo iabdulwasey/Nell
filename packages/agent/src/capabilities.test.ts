@@ -37,17 +37,16 @@ describe("what a model can do", () => {
 
   /**
    * The table records what Nell can *deliver* through a vendor, not what the
-   * vendor markets. OpenAI's Code Interpreter is real and unreachable from here
-   * — it lives behind the Responses API, and the assist path speaks chat
-   * completions — so claiming `code` would put a yes on a row that fails when
-   * somebody relies on it.
+   * vendor markets — and `code` is the line that proves the discipline. It was
+   * struck from OpenAI while the container was unreachable, and restored only
+   * once a transport existed that speaks the Responses API. A capability moves
+   * into that table when Nell can route it, never when a vendor announces it.
    */
-  it("knows GPT draws and searches, and that its sandbox is out of reach", () => {
+  it("knows GPT does everything Nell consumes", () => {
     const can = capabilitiesOf(MODELS["openai/gpt-5"]!);
-    for (const capability of ["text", "vision", "search", "image"] as const) {
+    for (const capability of ["text", "vision", "search", "code", "image"] as const) {
       expect(can.has(capability), capability).toBe(true);
     }
-    expect(can.has("code")).toBe(false);
   });
 
   /**
@@ -148,34 +147,24 @@ describe("what the user is told", () => {
    */
   it("suggests the vendor that closes most of the gap first", () => {
     const result = report({ defaultModel: "deepseek/deepseek-v3" }, lookup, new Set(["deepseek"]));
-    // DeepSeek reaches text and search; what is missing is vision, code and
-    // image, and Anthropic is the only vendor here that closes `code`.
-    expect(result.wouldFix[0]).toBe("anthropic");
+    // DeepSeek reaches text and search; vision, code and image are missing, and
+    // OpenAI is now the only vendor that closes all three at once.
+    expect(result.wouldFix[0]).toBe("openai");
   });
 
   /**
-   * The behaviour the whole settings design turns on, stated as a pair.
+   * The behaviour the whole settings design turns on.
    *
    * Someone who picks a model covering everything should be asked for nothing —
    * no second key, no per-capability choice, silence. Someone who picks a model
-   * that cannot draw should be told so *while they are choosing*, not when a
-   * task fails. Both fall out of the same computation, which is why they are
-   * asserted together: it is the contrast that is the feature.
+   * that cannot draw should be told so *while they are choosing*, not when a task
+   * fails. Both fall out of one computation, and the contrast is the feature.
+   *
+   * One vendor covers everything Nell consumes again now the container is
+   * reachable, so this case is a single key once more.
    */
-  it("says nothing to a user whose install covers everything", () => {
-    /**
-     * **No single vendor is complete any more, and that is the true state
-     * rather than a regression.** OpenAI cannot make files here — its sandbox
-     * is behind an API this path does not speak — and Anthropic cannot draw.
-     * So a complete install is a *combination*, which is precisely the
-     * arrangement per-capability assignment exists for: Claude to reason and
-     * write, GPT to draw.
-     */
-    const result = report(
-      { defaultModel: "anthropic/claude-sonnet-4-5", overrides: { image: "openai/gpt-5" } },
-      lookup,
-      new Set(["anthropic", "openai"])
-    );
+  it("says nothing to a user whose model covers everything", () => {
+    const result = report({ defaultModel: "openai/gpt-5" }, lookup, new Set(["openai"]));
 
     expect(result.cannot).toHaveLength(0);
     expect(result.needsKey).toHaveLength(0);
@@ -186,16 +175,35 @@ describe("what the user is told", () => {
   });
 
   /**
+   * And the combination still works, which is what per-capability assignment is
+   * for: Claude to reason and write, GPT to draw.
+   */
+  it("says nothing when two vendors cover it between them", () => {
+    const result = report(
+      { defaultModel: "anthropic/claude-sonnet-4-5", overrides: { image: "openai/gpt-5" } },
+      lookup,
+      new Set(["anthropic", "openai"])
+    );
+    expect(result.cannot).toHaveLength(0);
+    expect(result.needsKey).toHaveLength(0);
+  });
+
+  /**
    * `audio` and `embed` are in the schema and nothing in Nell asks for either.
    * Counting them as gaps would put two permanent "can't" rows on every screen
    * that no key could ever close — our limitation, dressed as the user's.
    */
   it("does not report a gap nothing could close", () => {
-    const result = report({ defaultModel: "openai/gpt-5" }, lookup, new Set(["openai"]));
+    const result = report(
+      { defaultModel: "anthropic/claude-sonnet-4-5" },
+      lookup,
+      new Set(["anthropic"])
+    );
+    // Nothing in Nell consumes either, so neither is our user's problem.
     expect(result.cannot).not.toContain("audio");
     expect(result.cannot).not.toContain("embed");
-    // The one real gap for this vendor is still named.
-    expect(result.cannot).toContain("code");
+    // The real gap for this vendor is still named: Claude cannot draw.
+    expect(result.cannot).toContain("image");
   });
 
   /**
