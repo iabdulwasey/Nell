@@ -68,6 +68,7 @@ import {
   renderConversation,
 } from "./conversation.js";
 import { compact, forgetNote, readNotes, renderNotes, writeNote } from "./notes.js";
+import { withMachine } from "./machine-lock.js";
 import type { AuditView } from "./audit-store.js";
 import { FORMS } from "./vault-kinds.js";
 import type { CredentialOffer } from "./vault-secrets.js";
@@ -204,6 +205,15 @@ export interface Live {
    * else.
    */
   readonly onApprovalNeeded?: (label: string, sessionId: string) => void;
+  /**
+   * What to call this task in a reply, when several are in flight.
+   *
+   * Returns undefined when it is the only one, because a prefix on a single
+   * conversation is noise. A function rather than a value: whether it is needed
+   * depends on what else is running *when the reply is sent*, not on what was
+   * running when the task started.
+   */
+  readonly label?: () => string | undefined;
 }
 
 export async function handleMessage(
@@ -564,8 +574,22 @@ interface TaskRun {
  */
 async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutcome> {
   const log = options.log ?? (() => undefined);
-  const reply = (text: string) =>
-    sendMessage({ token: options.telegramToken, chatId: run.threadRef, text });
+  /**
+   * Prefixed with which request it answers, when more than one is running.
+   *
+   * Two tasks reporting into one flat thread produce two unlabelled answers,
+   * and working out which is which is left to the reader — who did not ask for
+   * that job. With one task in flight there is nothing to disambiguate and the
+   * prefix is left off.
+   */
+  const reply = (text: string) => {
+    const name = run.live?.label?.();
+    return sendMessage({
+      token: options.telegramToken,
+      chatId: run.threadRef,
+      text: name ? `[${name}] ${text}` : text,
+    });
+  };
 
   await withWorkspace(options.pool, run.scope, async (client) => {
     await client.query(
@@ -757,6 +781,9 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         ...(options.assistModel ? { assistModel: options.assistModel } : {}),
         ...(options.tools?.length ? { tools: options.tools } : {}),
         ...(options.vault ? { credentials: options.vault.offers } : {}),
+        // Browse steps take the workspace's one browser exclusively; assist
+        // steps touch no session and never wait for it.
+        withMachine: (fn) => withMachine(run.scope.workspaceId, fn),
         ...(options.durably
           ? {
               /**
@@ -1402,8 +1429,20 @@ async function vaultCommand(
  * queueing behind it — which is the difference between an assistant and a form
  * submission.
  */
+/**
+ * How many tasks may be in flight for one process.
+ *
+ * A cost bound rather than a safety one — safety is `withMachine`, which keeps
+ * two browse steps off one browser. Three lets "look up two things while
+ * booking a third" work without a burst of messages opening a dozen model
+ * conversations at once.
+ */
+export const MAX_CONCURRENT_TASKS = 3;
+
 interface Running {
   readonly workspaceId: string;
+  /** Resolves when the task finishes, however it finishes. */
+  readonly done: Promise<unknown>;
   /** The task itself, so the router can decide what a message is about. */
   readonly task: Task;
   /** Drained by the loop at the start of each turn. */
@@ -1441,8 +1480,24 @@ interface AwaitingApproval {
 export async function run(options: NellOptions, signal?: AbortSignal): Promise<void> {
   const log = options.log ?? (() => undefined);
   const inbox: InboundMessage[] = [];
-  let running: Running | undefined;
+  /**
+   * Tasks in flight, keyed by their own id.
+   *
+   * A map rather than a single slot, because "ask for two things and get two
+   * things" is the difference between an assistant and a queue. What stops
+   * them colliding is not this — it is `withMachine`, which serialises the one
+   * resource they genuinely share.
+   */
+  const running = new Map<string, Running>();
   let waiting: AwaitingApproval | undefined;
+  /**
+   * Distinguishes two tasks started from the same chat.
+   *
+   * The thread ref alone is not a key once tasks overlap — two requests in one
+   * Telegram chat would collide on it, and the second would silently replace
+   * the first in the map, leaving the first unroutable and unstoppable.
+   */
+  let nextTaskNumber = 1;
 
   log("listening on Telegram");
 
@@ -1466,12 +1521,14 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
         const text = message.envelope.text.trim();
         log(`> ${text.slice(0, 80)}`);
 
-        const mine =
-          running !== undefined &&
-          message.userId !== undefined &&
-          accessScopeForUser(message.userId).workspaceId === running.workspaceId;
+        const workspace = message.userId
+          ? accessScopeForUser(message.userId).workspaceId
+          : undefined;
+        const mine = workspace
+          ? [...running.values()].filter((task) => task.workspaceId === workspace)
+          : [];
 
-        if (mine && running) {
+        if (mine.length > 0) {
           /**
            * "Stop" is unambiguous and immediate.
            *
@@ -1480,12 +1537,15 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
            * something is going wrong now.
            */
           if (/^(stop|cancel|abort|never ?mind)\b/iu.test(text)) {
-            running.abort.abort();
-            log("  ! stopped by user");
+            // Everything of theirs. With several in flight, "stop" said in
+            // alarm means all of it — asking which would be the wrong question
+            // at the wrong moment.
+            for (const task of mine) task.abort.abort();
+            log(`  ! stopped ${String(mine.length)} by user`);
             await sendMessage({
               token: options.telegramToken,
               chatId: message.envelope.threadRef,
-              text: "Stopping.",
+              text: mine.length > 1 ? `Stopping all ${String(mine.length)}.` : "Stopping.",
             });
             continue;
           }
@@ -1504,40 +1564,40 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
            * `coordinator` when nothing ties the message to a task, which is the
            * case this was getting wrong.
            */
-          const target = routeMessage({ text }, [running.task], running.workspaceId);
+          const target = routeMessage(
+            { text },
+            mine.map((task) => task.task),
+            mine[0]!.workspaceId
+          );
 
           if (target.kind === "task") {
-            running.steering.push(text);
-            log("  ! steering the running task");
-            continue;
+            const steered = running.get(target.taskId);
+            if (steered) {
+              steered.steering.push(text);
+              log(`  ! steering "${steered.task.label.slice(0, 40)}"`);
+              continue;
+            }
           }
 
           if (target.kind === "ambiguous") {
-            // Asked rather than guessed: sending a "yes" to the wrong task is
-            // the failure this router exists to avoid.
+            /**
+             * Asked rather than guessed, and the candidates are named.
+             *
+             * Sending someone's "yes" to the wrong task is the failure this
+             * router exists to avoid, and with several in flight the question
+             * is only answerable if it says which ones it is between.
+             */
+            const names = target.candidates
+              .map((id) => running.get(id)?.task.label)
+              .filter(Boolean)
+              .map((label) => `"${String(label).slice(0, 40)}"`);
             await sendMessage({
               token: options.telegramToken,
               chatId: message.envelope.threadRef,
-              text: `Is that about "${running.task.label}", or something new?`,
+              text: `Is that about ${names.join(" or ")}, or something new?`,
             });
             continue;
           }
-
-          /**
-           * A new request while something is running: queued, and said so.
-           *
-           * Queued rather than run alongside, because one workspace has one
-           * browser and two tasks driving it would be two people fighting over a
-           * pointer. Saying so is the part that matters — silence here reads as
-           * the message having been ignored, which is exactly what used to
-           * happen to it.
-           */
-          log("  → queued behind the running task");
-          await sendMessage({
-            token: options.telegramToken,
-            chatId: message.envelope.threadRef,
-            text: `Noted — I'll come to that once I've finished "${running.task.label}".`,
-          });
         }
 
         inbox.push(message);
@@ -1557,31 +1617,27 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
   while (!signal?.aborted) {
     const message = inbox.shift();
     if (!message) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (running.size === 0) await new Promise((resolve) => setTimeout(resolve, 250));
+      else await Promise.race([...running.values()].map((task) => task.done));
       continue;
+    }
+
+    /**
+     * Wait for a slot rather than refusing.
+     *
+     * The cap is about the model bill and the machine queue, not about
+     * correctness — `withMachine` is what keeps two browse steps apart. Three is
+     * enough that "look up two things while booking a third" works, and small
+     * enough that a burst of messages cannot open a dozen model conversations at
+     * once.
+     */
+    while (running.size >= MAX_CONCURRENT_TASKS) {
+      await Promise.race([...running.values()].map((task) => task.done));
     }
 
     const abort = new AbortController();
     const steering: string[] = [];
     const workspaceId = message.userId ? accessScopeForUser(message.userId).workspaceId : undefined;
-    running = workspaceId
-      ? {
-          workspaceId,
-          steering,
-          abort,
-          task: {
-            id: message.envelope.threadRef,
-            workspaceId,
-            // The request itself is the label the router matches against, and
-            // the only description of this task that exists while it runs.
-            label: message.envelope.text.trim().slice(0, 120),
-            status: "running" as const,
-            spentAmount: 0,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          },
-        }
-      : undefined;
 
     /**
      * A "yes" that arrived before this task started.
@@ -1602,19 +1658,66 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
       waiting = undefined;
     }
 
-    await handleMessage(options, message, {
+    const key = `${message.envelope.threadRef}:${String(nextTaskNumber++)}`;
+
+    const done = handleMessage(options, message, {
       steering: () => steering.splice(0, steering.length),
       signal: abort.signal,
       onApprovalNeeded: (label, sessionId) => {
         if (workspaceId) waiting = { workspaceId, label, sessionId };
       },
-    }).catch((error: unknown) => {
-      log(`  failed: ${error instanceof Error ? error.message : "unknown"}`);
-      return undefined;
-    });
+      /**
+       * Say which request an answer belongs to, but only when it is not
+       * obvious.
+       *
+       * With one task in flight a prefix is noise. With two, an unlabelled
+       * "Done — here are the flights" is a guess about which question it
+       * answers, and the guess is the reader's to make.
+       */
+      ...(workspaceId
+        ? {
+            label: () =>
+              [...running.values()].filter((task) => task.workspaceId === workspaceId).length > 1
+                ? message.envelope.text.trim().slice(0, 40)
+                : undefined,
+          }
+        : {}),
+    })
+      .catch((error: unknown) => {
+        log(`  failed: ${error instanceof Error ? error.message : "unknown"}`);
+        return undefined;
+      })
+      .finally(() => {
+        running.delete(key);
+      });
 
-    running = undefined;
+    if (workspaceId) {
+      running.set(key, {
+        workspaceId,
+        steering,
+        abort,
+        done,
+        task: {
+          id: key,
+          workspaceId,
+          // The request itself is the label the router matches against, and the
+          // only description of this task that exists while it runs.
+          label: message.envelope.text.trim().slice(0, 120),
+          status: "running" as const,
+          spentAmount: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      });
+    } else {
+      // A stranger's message still has to be answered, and never becomes a task.
+      await done;
+    }
   }
+
+  // Nothing in flight is abandoned on shutdown: a task that was mid-booking
+  // deserves to finish or to fail, not to vanish with the process.
+  await Promise.allSettled([...running.values()].map((task) => task.done));
 
   await polling;
 }

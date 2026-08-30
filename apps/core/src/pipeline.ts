@@ -83,6 +83,15 @@ export interface PipelineDeps {
    * Absent when nothing durable is configured, in which case steps simply run.
    */
   readonly durably?: <T>(name: string, fn: () => Promise<T>) => Promise<T>;
+  /**
+   * Runs a browse step with exclusive use of the workspace's browser.
+   *
+   * Only the browse branch takes it. The session carries taint and spend
+   * approvals, both held per session, so two tasks sharing one would share
+   * both — an approval granted for one booking sitting ready when another task
+   * reaches a payment page. Assist steps touch no session and never wait.
+   */
+  readonly withMachine?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 export interface PipelineRequest {
@@ -227,30 +236,35 @@ export async function runPipeline(
          * never browses never launches a browser, and most plans do not.
          */
         deps.onStep?.(step.instruction.slice(0, 80));
-        const outcome = await durably(`browse:${String(index)}`, async () =>
-          runLoop(
-            {
-              provider: deps.browser,
-              executor: deps.executor,
-              model: deps.model,
-              modelId: deps.modelId,
-              ...(deps.search ? { search: deps.search } : {}),
-              ...(deps.credentials
-                ? {
-                    credentials: (origin: string) => deps.credentials!(request.scope, origin),
-                  }
-                : {}),
-            },
-            {
-              scope: request.scope,
-              sessionId: await request.sessionId(),
-              objective: carried ? `${step.instruction}\n\nSo far:\n${carried}` : step.instruction,
-              ...(request.profile ? { profile: request.profile } : {}),
-              ...(request.steering ? { steering: request.steering } : {}),
-              ...(request.signal ? { signal: request.signal } : {}),
-              ...(deps.onStep ? { onStep: deps.onStep } : {}),
-              ...(deps.onDiagnostic ? { onDiagnostic: deps.onDiagnostic } : {}),
-            }
+        const exclusively = deps.withMachine ?? (<T>(fn: () => Promise<T>) => fn());
+        const outcome = await exclusively(async () =>
+          durably(`browse:${String(index)}`, async () =>
+            runLoop(
+              {
+                provider: deps.browser,
+                executor: deps.executor,
+                model: deps.model,
+                modelId: deps.modelId,
+                ...(deps.search ? { search: deps.search } : {}),
+                ...(deps.credentials
+                  ? {
+                      credentials: (origin: string) => deps.credentials!(request.scope, origin),
+                    }
+                  : {}),
+              },
+              {
+                scope: request.scope,
+                sessionId: await request.sessionId(),
+                objective: carried
+                  ? `${step.instruction}\n\nSo far:\n${carried}`
+                  : step.instruction,
+                ...(request.profile ? { profile: request.profile } : {}),
+                ...(request.steering ? { steering: request.steering } : {}),
+                ...(request.signal ? { signal: request.signal } : {}),
+                ...(deps.onStep ? { onStep: deps.onStep } : {}),
+                ...(deps.onDiagnostic ? { onDiagnostic: deps.onDiagnostic } : {}),
+              }
+            )
           )
         );
 
