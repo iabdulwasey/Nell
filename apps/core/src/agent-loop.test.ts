@@ -12,7 +12,7 @@ import type { ModelProvider } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
 import { accessScopeForUser } from "@nell/shared";
 import { describe, expect, it } from "vitest";
-import { MAX_ACTION_FAILURES, runLoop } from "./agent-loop.js";
+import { MAX_ACTION_FAILURES, runLoop, type Steer } from "./agent-loop.js";
 
 const scope = accessScopeForUser("loop");
 
@@ -513,7 +513,7 @@ describe("when a step fails on the page", () => {
    * watch it head somewhere wrong and wait for it to finish being wrong.
    */
   it("takes a correction mid-task and puts it above the objective", async () => {
-    const said = ["it is 2026, not 2024"];
+    const said: Steer[] = [{ kind: "refine", constraint: "it is 2026, not 2024" }];
     let sawCorrection = false;
 
     const listening = {
@@ -553,6 +553,123 @@ describe("when a step fails on the page", () => {
 
     expect(sawCorrection).toBe(true);
     expect(outcome.ok).toBe(true);
+  });
+
+  /**
+   * The failure this was written for, reproduced.
+   *
+   * Watched live: told three times to abandon one cinema — *"forget sec 90 mall,
+   * book anyone close"* — the agent hunted for that cinema for another hundred
+   * steps and 41 clicks. The correction *did* arrive; the log shows it consumed.
+   * It lost anyway, because it arrived as one line labelled "this outranks the
+   * objective" while the objective still named the place and `history` held
+   * forty steps of looking for it. One line against forty is not an argument the
+   * correction can win.
+   *
+   * So the assertion is not "the correction was seen". It is that the abandoned
+   * goal is **gone from the prompt entirely** — no objective naming it, no
+   * history arguing for it.
+   */
+  it("erases the abandoned goal when the user changes their mind", async () => {
+    const said: Steer[] = [];
+    const prompts: string[] = [];
+    let turn = 0;
+
+    const listening = {
+      name: "stub",
+      complete: async (request: { messages: readonly { content: string }[] }) => {
+        turn += 1;
+        prompts.push(request.messages.map((message) => message.content).join("\n"));
+
+        // Two turns chasing the original goal, so there is a history to discard.
+        if (turn === 2) {
+          said.push({ kind: "redirect", objective: "Book 2 seats at any cinema nearby" });
+        }
+
+        return {
+          ok: true,
+          value: {
+            reasoning: turn < 3 ? "Looking for sec 90 mall" : "Looking at nearby cinemas",
+            done: turn >= 3,
+            answer: turn >= 3 ? "Booked" : "",
+            // A real action, so the plan validates and its reasoning reaches
+            // `history` — which is the thing these two tests are about.
+            actions: turn >= 3 ? [] : [{ action: "goto", url: "https://example.com/x" }],
+            search: "",
+            outstanding: [],
+          },
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    } as unknown as ModelProvider;
+
+    const outcome = await runLoop(
+      { provider, executor: executor(0).executor, model: listening, modelId: "m" },
+      {
+        scope,
+        sessionId: "s",
+        objective: "Book 2 good seats at sec 90 mall",
+        steering: () => said.splice(0, said.length),
+      }
+    );
+
+    expect(outcome.ok).toBe(true);
+
+    const afterRedirect = prompts.at(-1) ?? "";
+    // The new goal is what it plans against.
+    expect(afterRedirect).toContain("any cinema nearby");
+    // And the old one is nowhere — not as an objective, not as history.
+    expect(afterRedirect).not.toContain("sec 90");
+  });
+
+  /**
+   * The opposite case, and the reason a redirect cannot be the default reading.
+   * Here the goal is unchanged and what has been tried is still worth knowing —
+   * discarding it would make the agent repeat the thing it was told to stop.
+   */
+  it("keeps what it has tried when the correction is only about how", async () => {
+    const said: Steer[] = [];
+    const prompts: string[] = [];
+    let turn = 0;
+
+    const listening = {
+      name: "stub",
+      complete: async (request: { messages: readonly { content: string }[] }) => {
+        turn += 1;
+        prompts.push(request.messages.map((message) => message.content).join("\n"));
+        if (turn === 2) {
+          said.push({ kind: "refine", constraint: "Do not use bookmyshow, it blocks us" });
+        }
+        return {
+          ok: true,
+          value: {
+            reasoning: `Tried approach ${String(turn)}`,
+            done: turn >= 3,
+            answer: turn >= 3 ? "Booked" : "",
+            actions: turn >= 3 ? [] : [{ action: "goto", url: "https://example.com/x" }],
+            search: "",
+            outstanding: [],
+          },
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    } as unknown as ModelProvider;
+
+    await runLoop(
+      { provider, executor: executor(0).executor, model: listening, modelId: "m" },
+      {
+        scope,
+        sessionId: "s",
+        objective: "Book 2 good seats at sec 90 mall",
+        steering: () => said.splice(0, said.length),
+      }
+    );
+
+    const afterRefine = prompts.at(-1) ?? "";
+    expect(afterRefine).toContain("bookmyshow");
+    // The goal survives, and so does what has already been attempted.
+    expect(afterRefine).toContain("sec 90");
+    expect(afterRefine).toContain("Tried approach 1");
   });
 
   /**

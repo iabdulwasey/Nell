@@ -30,6 +30,17 @@ import { detectBlock, explainBlock, type BrowserProvider, type PageSnapshot } fr
 import type { AccessScope } from "@nell/shared";
 import type { CredentialOffer } from "./vault-secrets.js";
 
+/**
+ * Something the user said while the task was running.
+ *
+ * Two kinds, because they need opposite things done. A `refine` amends what the
+ * task knows and leaves the goal alone; a `redirect` replaces the goal, which
+ * makes everything learned in pursuit of the old one worse than useless.
+ */
+export type Steer =
+  | { readonly kind: "refine"; readonly constraint: string }
+  | { readonly kind: "redirect"; readonly objective: string };
+
 export interface LoopDeps {
   readonly provider: BrowserProvider;
   readonly executor: BrowserExecutor;
@@ -74,8 +85,15 @@ export interface LoopRequest {
   readonly onStep?: (note: string) => void;
   /** Technical detail for the operator's log. Never reaches the user. */
   readonly onDiagnostic?: (note: string) => void;
-  /** Drains anything the user has said since the task started. */
-  readonly steering?: () => readonly string[];
+  /**
+   * Drains anything the user has said since the task started.
+   *
+   * Typed, because "the user said something" is not one thing. A correction to
+   * *how* the task is going amends what it knows; a change to *what* is wanted
+   * replaces the goal, and leaves everything learned in pursuit of the old one
+   * as an argument for a goal nobody has any more.
+   */
+  readonly steering?: () => readonly Steer[];
   /** Aborts the task between steps, because the user asked it to stop. */
   readonly signal?: AbortSignal;
 }
@@ -250,6 +268,14 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
   let outstanding: readonly string[] = [];
   /** Things the user has said since. Trusted, and they amend the objective. */
   const instructions: string[] = [];
+  /**
+   * The goal, which the user may change while it is being pursued.
+   *
+   * `request.objective` is the goal they *started* with. Held separately because
+   * a redirect makes it wrong, and continuing to plan against it is precisely
+   * the failure this exists to fix.
+   */
+  let objective = request.objective;
   /** Consecutive failures to read the page at all. Reset by any successful look. */
   let unreadable = 0;
   /** Times the agent has been sent back to finish the job. */
@@ -293,9 +319,38 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
      * when nothing on a page ever may.
      */
     const said = request.steering?.() ?? [];
+    for (const steer of said) {
+      if (steer.kind === "redirect") {
+        /**
+         * The goal changed, so everything gathered chasing the old one goes.
+         *
+         * This is the whole fix, and replacing the objective alone would not
+         * have been it. Watched live: told three times to abandon one cinema,
+         * the agent carried on hunting for it for a hundred more steps — because
+         * the correction arrived as *one line* labelled "this outranks the
+         * objective", while `history` held forty steps of looking for that
+         * cinema and `objective` still named it. One line against forty is not
+         * an argument the correction can win.
+         *
+         * After a redirect the history is not merely stale. It is evidence for a
+         * goal nobody has any more, and every turn it spends is a turn arguing
+         * for the thing the user just rejected. `outstanding` goes for the same
+         * reason: those are questions raised by the abandoned goal.
+         *
+         * `findings` are kept — a fact learned about the world stays true when
+         * the user changes their mind about what to do with it.
+         */
+        objective = steer.objective;
+        history.length = 0;
+        instructions.length = 0;
+        outstanding = [];
+        request.onDiagnostic?.(`redirected: ${steer.objective}`);
+      } else {
+        instructions.push(steer.constraint);
+        request.onDiagnostic?.(`steered: ${steer.constraint}`);
+      }
+    }
     if (said.length > 0) {
-      instructions.push(...said);
-      request.onDiagnostic?.(`steered: ${said.join(" | ")}`);
       // A new instruction is new information, so the task has not stalled.
       lastProgressAt = clock();
     }
@@ -425,13 +480,18 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     }
 
     if (looking) {
-      const seen = await lookAndAct(deps, request, {
-        history,
-        step,
-        searched,
-        bad: badPlanCounter,
-        ...(request.profile ? { profile: request.profile } : {}),
-      });
+      const seen = await lookAndAct(
+        deps,
+        request,
+        {
+          history,
+          step,
+          searched,
+          bad: badPlanCounter,
+          ...(request.profile ? { profile: request.profile } : {}),
+        },
+        objective
+      );
       if (seen.done) return seen.outcome;
       if (seen.answer) partial = seen.answer;
       continue;
@@ -453,7 +513,7 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
     const planned = await planNext({
       provider: deps.model,
       model: deps.modelId,
-      objective: request.objective,
+      objective,
       snapshot,
       history,
       findings,
@@ -748,7 +808,16 @@ interface LookResult {
 async function lookAndAct(
   deps: LoopDeps,
   request: LoopRequest,
-  state: LookState
+  state: LookState,
+  /**
+   * The goal *now*, which is not always the goal the task started with.
+   *
+   * Passed rather than read off `request`, because a redirect replaces it and
+   * this turn would otherwise keep planning against what the user has already
+   * abandoned. Exactly the bug being fixed, in the half of the loop that was
+   * written later and inherited the shape without the fix.
+   */
+  objective: string
 ): Promise<LookResult> {
   /**
    * The driver throws here too, and this did not catch it.
@@ -793,7 +862,7 @@ async function lookAndAct(
   const planned = await planFromScreen({
     provider: deps.model,
     model: deps.modelId,
-    objective: request.objective,
+    objective,
     screenshot: shot.result.screenshot,
     display: space.display,
     // The origin, not the full URL: it is what the driver reports, and for

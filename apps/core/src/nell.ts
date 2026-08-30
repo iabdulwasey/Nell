@@ -41,7 +41,7 @@ import { exportMemory, greeting, renderBrain } from "@nell/memory";
 import type { VaultItemKind } from "@nell/vault";
 import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
-import { runLoop, type LoopOutcome } from "./agent-loop.js";
+import { runLoop, type LoopOutcome, type Steer } from "./agent-loop.js";
 import { catalogLookup } from "./assignment.js";
 import { withWorkspace } from "./db.js";
 import { answerAboutFiles, fetchAttachment, readableKind, type StoredFile } from "./documents.js";
@@ -57,6 +57,7 @@ import {
   remember,
 } from "./profile.js";
 import { decideFollowUp } from "./follow-up.js";
+import { classifyMidTask, type MidTaskIntent } from "./mid-task.js";
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createFollowUp, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
@@ -200,7 +201,14 @@ const recent = new Map<string, StoredFile[]>();
 
 export interface Live {
   /** Drains what the user has said since the task started. */
-  readonly steering?: () => readonly string[];
+  readonly steering?: () => readonly Steer[];
+  /**
+   * Each progress note, so the caller can keep the last few.
+   *
+   * A mid-task correction is unjudgeable without them: *"not that theatre"*
+   * names something that exists only in the last handful of steps.
+   */
+  readonly onNote?: (note: string) => void;
   /** Aborts the task between steps. */
   readonly signal?: AbortSignal;
   /**
@@ -805,6 +813,7 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         outputRoot: options.fileRoot,
         onStep: (note) => {
           log(`  ${note}`);
+          run.live?.onNote?.(note);
           void reply(note);
         },
         onDiagnostic: (note) => {
@@ -1485,7 +1494,23 @@ interface Running {
   /** The task itself, so the router can decide what a message is about. */
   readonly task: Task;
   /** Drained by the loop at the start of each turn. */
-  readonly steering: string[];
+  readonly steering: Steer[];
+  /**
+   * The goal as it stands *now*, which a redirect changes.
+   *
+   * Held here as well as inside the loop because the classifier needs it: "not
+   * that one" cannot be judged against the request the user typed ten minutes
+   * and one change of mind ago.
+   */
+  objective: string;
+  /**
+   * A little of what the task has lately been doing.
+   *
+   * Without it a correction is unjudgeable. *"Not that theatre"* names something
+   * only visible in the last few steps, and a classifier shown the objective
+   * alone would have to guess which theatre it had reached.
+   */
+  readonly recent: string[];
   readonly abort: AbortController;
 }
 
@@ -1537,6 +1562,16 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
    * the first in the map, leaving the first unroutable and unstoppable.
    */
   let nextTaskNumber = 1;
+
+  /**
+   * Resolved once for the poll loop, which needs a model of its own.
+   *
+   * Deciding what a mid-task message *wants* is a judgement, and the poll loop
+   * is where mid-task messages arrive. Absent when nothing is configured, in
+   * which case a correction falls back to being a constraint — the least
+   * destructive reading, and what every correction used to be.
+   */
+  const router = providerFor(options.modelId, options.keys);
 
   log("listening on Telegram");
 
@@ -1612,9 +1647,72 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
           if (target.kind === "task") {
             const steered = running.get(target.taskId);
             if (steered) {
-              steered.steering.push(text);
-              log(`  ! steering "${steered.task.label.slice(0, 40)}"`);
-              continue;
+              /**
+               * Routing said *which* task. This says what to do about it.
+               *
+               * Everything landing here used to become one undifferentiated
+               * thing — appended to a list of instructions beside an unchanged
+               * objective. Watched live: told three times to abandon one cinema,
+               * the agent hunted for it for another hundred steps, because a
+               * correction arriving as one line cannot outvote an objective that
+               * still names the place and a history full of looking for it.
+               *
+               * The three cases need opposite things done, which is why they can
+               * no longer share a code path.
+               */
+              const intent: MidTaskIntent = router.ok
+                ? await classifyMidTask(text, {
+                    provider: router.provider,
+                    model: options.modelId,
+                    objective: steered.objective,
+                    recently: steered.recent,
+                  })
+                : // No model, so the least destructive reading: a constraint
+                  // keeps both the objective and the history.
+                  { kind: "refine", constraint: text };
+
+              if (intent.kind === "redirect") {
+                steered.objective = intent.objective;
+                steered.steering.push({ kind: "redirect", objective: intent.objective });
+                log(`  ! redirect → "${intent.objective.slice(0, 60)}"`);
+                continue;
+              }
+
+              if (intent.kind === "refine") {
+                steered.steering.push({ kind: "refine", constraint: intent.constraint });
+                log(`  ! steering "${steered.task.label.slice(0, 40)}"`);
+                continue;
+              }
+
+              /**
+               * The same request again, which means nothing looked like it was
+               * happening. Starting a second copy is the worst answer: it
+               * doubles the work and the first one is still going.
+               */
+              if (intent.kind === "repeat") {
+                await sendMessage({
+                  token: options.telegramToken,
+                  chatId: message.envelope.threadRef,
+                  text: `Still on it — ${steered.recent.at(-1) ?? "working"}.`,
+                });
+                log(`  ! repeat of a running task, told them`);
+                continue;
+              }
+
+              /**
+               * A new request, which falls through to the queue below — but is
+               * acknowledged first.
+               *
+               * It was queued in silence, and from the other end that is
+               * indistinguishable from being ignored. The user sent the same
+               * thing twice and then said Nell was not listening; it was
+               * listening, and had said nothing.
+               */
+              await sendMessage({
+                token: options.telegramToken,
+                chatId: message.envelope.threadRef,
+                text: "Noted — I'll get to that once this is done.",
+              });
             }
           }
 
@@ -1675,7 +1773,7 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
     }
 
     const abort = new AbortController();
-    const steering: string[] = [];
+    const steering: Steer[] = [];
     const workspaceId = message.userId ? accessScopeForUser(message.userId).workspaceId : undefined;
 
     /**
@@ -1699,8 +1797,17 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
 
     const key = `${message.envelope.threadRef}:${String(nextTaskNumber++)}`;
 
+    /** The last few progress notes, so a correction can be judged against them. */
+    const recentNotes: string[] = [];
+
     const done = handleMessage(options, message, {
       steering: () => steering.splice(0, steering.length),
+      onNote: (note) => {
+        recentNotes.push(note);
+        // Bounded: the classifier reads the last handful, and an unbounded list
+        // on a task doing 245 steps is a leak with no reader.
+        if (recentNotes.length > 12) recentNotes.shift();
+      },
       signal: abort.signal,
       onApprovalNeeded: (label, sessionId) => {
         if (workspaceId) waiting = { workspaceId, label, sessionId };
@@ -1734,6 +1841,9 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
       running.set(key, {
         workspaceId,
         steering,
+        // What they asked for, until they change it.
+        objective: message.envelope.text.trim(),
+        recent: recentNotes,
         abort,
         done,
         task: {

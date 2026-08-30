@@ -25,7 +25,7 @@ import type { SearchProvider } from "@nell/integrations";
 import type { AccessScope } from "@nell/shared";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { runLoop } from "./agent-loop.js";
+import { runLoop, type Steer } from "./agent-loop.js";
 import type { StoredFile } from "./documents.js";
 import { humanise } from "./failure.js";
 import { withoutThroatClearing } from "./opening.js";
@@ -104,7 +104,7 @@ export interface PipelineRequest {
   readonly objective: string;
   readonly files: readonly StoredFile[];
   readonly profile?: string;
-  readonly steering?: () => readonly string[];
+  readonly steering?: () => readonly Steer[];
   readonly signal?: AbortSignal;
 }
 
