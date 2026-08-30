@@ -17,7 +17,7 @@ import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import { verifyReceipt } from "@nell/memory";
 import { withWorkspace } from "./db.js";
 import { buildIndex, searchMemory } from "@nell/memory";
-import { deleteScope, renderReceipt } from "./deletion-store.js";
+import { deleteScope, renderReceipt, tenantTables, uncovered } from "./deletion-store.js";
 import { memorySources, readLedger, recordOutcome } from "./memory-store.js";
 
 const url = process.env["DATABASE_URL"];
@@ -271,3 +271,45 @@ describeDb("what a finished task leaves behind", () => {
     expect(Object.keys(entry?.detail ?? {})).toEqual(["found"]);
   });
 });
+
+describe_covered();
+
+function describe_covered(): void {
+  describeDb("nothing survives account closure by accident", () => {
+    /**
+     * The guard, asked of the database rather than of a list.
+     *
+     * The same rewrite the RLS gate needed: it once kept its own copy of the
+     * tenant tables, drifted to eleven against thirteen, and would have reported
+     * "verified" while a new table sat unprotected. Two hand-maintained lists of
+     * the same thing always drift.
+     *
+     * The hole this caught was real and recent. `/delete account` said
+     * *everything* and left behind the conversation, every free-form note, and —
+     * added the same day the scope was not updated — the workspace's **encrypted
+     * API keys**. It reported success while doing it.
+     */
+    it("covers every tenant table, or names it as deliberately kept", async () => {
+      const tables = await withWorkspace(pool, scope, (client) => tenantTables(client));
+      expect(tables.length).toBeGreaterThan(10);
+
+      const missed = uncovered(tables);
+      expect(missed, `account closure would leave behind: ${missed.join(", ")}`).toEqual([]);
+    });
+
+    /**
+     * And the guard must be capable of failing. A check that cannot report a
+     * hole is a check that will report none — this repo has shipped that twice,
+     * once by grepping for an empty string and once by sabotaging a table the
+     * migration then repaired before the check ran.
+     */
+    it("would report a table nobody had thought about", () => {
+      expect(uncovered(["preferences", "something_new"])).toEqual(["something_new"]);
+    });
+
+    /** The audit log is kept on purpose, and the guard knows the difference. */
+    it("does not report the audit log as a hole", () => {
+      expect(uncovered(["audit_log"])).toEqual([]);
+    });
+  });
+}

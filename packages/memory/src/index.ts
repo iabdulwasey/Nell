@@ -92,6 +92,7 @@ export {
 
 export {
   deletionScopeSchema,
+  DELIBERATELY_KEPT,
   isRebuildable,
   issueReceipt,
   NEVER_DELETED,

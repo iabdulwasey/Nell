@@ -110,8 +110,10 @@ export function verifyReceipt(receipt: DeletionReceipt): boolean {
  */
 export const SCOPE_CATEGORIES: Readonly<Record<DeletionScope, readonly string[]>> = {
   integration: ["synced-content", "derived-index", "extraction-cache"],
-  memory: ["preferences", "directives", "brain-cache"],
-  history: ["task-ledger", "monitor-reports"],
+  /** What the agent learned: stated facts, standing rules, and free-form notes. */
+  memory: ["preferences", "directives", "brain-cache", "notes"],
+  /** What it did, and what was said while doing it. */
+  history: ["task-ledger", "monitor-reports", "messages", "approvals"],
   account: [
     "synced-content",
     "derived-index",
@@ -119,13 +121,39 @@ export const SCOPE_CATEGORIES: Readonly<Record<DeletionScope, readonly string[]>
     "preferences",
     "directives",
     "brain-cache",
+    "notes",
     "task-ledger",
     "monitor-reports",
+    "messages",
+    "approvals",
     "vault-items",
     "vault-secrets",
     "monitors",
     "tasks",
+    "notification-outbox",
+    "provider-keys",
+    "model-choice",
+    "membership",
   ],
+};
+
+/**
+ * Tenant data this deployment holds that no scope removes — with the reason.
+ *
+ * The audit log is the only entry and the reason is in `NEVER_DELETED` below.
+ * The list exists so that "not deleted" has to be a **decision somebody wrote
+ * down**, rather than a table nobody remembered.
+ *
+ * The hole this closes was real and was mine. `/delete account` said
+ * *everything* and left behind the conversation, every free-form note, and —
+ * added the same day the scope was not updated — the workspace's **encrypted
+ * API keys**. A deletion feature that misses a table is not a smaller feature;
+ * it is a false claim, and this one's entire pitch is that the claim is true.
+ */
+export const DELIBERATELY_KEPT: Readonly<Record<string, string>> = {
+  "audit-log":
+    "Records that actions happened, not what they were about — including that " +
+    "this deletion happened. Removing it destroys the user's own evidence.",
 };
 
 /** Categories that are regenerable from source rather than user-authored. */

@@ -24,6 +24,7 @@
  */
 
 import {
+  DELIBERATELY_KEPT,
   isRebuildable,
   issueReceipt,
   plan,
@@ -53,6 +54,25 @@ const TABLES: Readonly<Record<string, string | undefined>> = {
   tasks: "tasks",
   "vault-items": "vault_items",
   "vault-secrets": "vault_secrets",
+  /** Everything `/remember` wrote — plainly memory, and missed for months. */
+  notes: "notes",
+  /** The conversation itself. */
+  messages: "messages",
+  approvals: "approvals",
+  "notification-outbox": "notification_outbox",
+  /**
+   * The workspace's own API keys, added the same day the deletion scope was not
+   * updated to include them — so account closure would have left an encrypted
+   * vendor credential behind while handing back a receipt saying everything had
+   * gone.
+   */
+  "provider-keys": "workspace_keys",
+  "model-choice": "workspace_models",
+  /**
+   * Membership. Account closure means the account is gone, so the row that says
+   * this person owns this workspace goes with it.
+   */
+  membership: "workspace_members",
   /**
    * The brain document is rendered on demand from the rows above, so there is
    * nothing of its own to remove — deleting the sources *is* deleting it. Named
@@ -62,8 +82,12 @@ const TABLES: Readonly<Record<string, string | undefined>> = {
   /** Nothing syncs yet: no integration is connected, so no content was stored. */
   "synced-content": undefined,
   "extraction-cache": undefined,
-  /** Derived from the sources above and rebuilt from them; see `notes`. */
-  "derived-index": "notes",
+  /**
+   * The recall index is built per query from live sources and never stored, so
+   * there is nothing of its own to delete — removing the sources *is* removing
+   * it. Named rather than omitted so the receipt says so out loud.
+   */
+  "derived-index": undefined,
 };
 
 export interface DeletionOutcome {
@@ -170,4 +194,53 @@ export function renderReceipt(outcome: DeletionOutcome): string {
   );
 
   return lines.join("\n");
+}
+
+/**
+ * Every tenant table, from the database rather than from a list.
+ *
+ * The same rewrite the RLS gate needed and for the same reason. That check once
+ * carried its own hand-maintained copy of the tenant tables, drifted to eleven
+ * against thirteen, and would have reported "verified" while a new table sat
+ * with no policy. Two hand-maintained lists of the same thing always drift; the
+ * fix is to stop keeping the second one and ask the database.
+ *
+ * Asked here so that a table added next month by somebody who never opens this
+ * file forces a decision: it is deleted by a scope, or it is named in
+ * `DELIBERATELY_KEPT` with a reason. Silence is the one option removed.
+ *
+ * `workspaces` is correctly absent — it has `id`, not `workspace_id`, because it
+ * *defines* tenants rather than belonging to one.
+ */
+export async function tenantTables(client: PoolClient): Promise<readonly string[]> {
+  const { rows } = await client.query<{ table_name: string }>(
+    `SELECT table_name FROM information_schema.columns
+      WHERE column_name = 'workspace_id' AND table_schema = 'public'
+      ORDER BY table_name`
+  );
+  return rows.map((row) => row.table_name);
+}
+
+/**
+ * Tables that account closure would leave behind.
+ *
+ * Empty is the only acceptable answer, and it was not empty: the conversation,
+ * every free-form note, and the workspace's encrypted API keys all survived a
+ * deletion that reported success. A deletion feature that misses a table is not
+ * a smaller feature — it is a false claim, and this one's whole pitch is that
+ * the claim is true.
+ */
+export function uncovered(tables: readonly string[]): readonly string[] {
+  const removed = new Set(
+    plan("account")
+      .map((category) => TABLES[category])
+      .filter((table): table is string => table !== undefined)
+  );
+  const kept = new Set(
+    Object.keys(DELIBERATELY_KEPT).map(
+      (category) => TABLES[category] ?? category.replace(/-/gu, "_")
+    )
+  );
+
+  return tables.filter((table) => !removed.has(table) && !kept.has(table));
 }

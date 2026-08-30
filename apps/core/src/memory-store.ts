@@ -328,7 +328,11 @@ export async function memorySources(
        FROM directives WHERE workspace_id = $1 AND revoked_at IS NULL
      UNION ALL
      SELECT 'ledger', id::text, (objective || ' — ' || outcome), completed_at, NULL::int
-       FROM task_ledger WHERE workspace_id = $1`,
+       FROM task_ledger WHERE workspace_id = $1
+     UNION ALL
+     SELECT 'preference', id, body, created_at, NULL::int
+       FROM notes
+      WHERE workspace_id = $1 AND superseded_by IS NULL AND lineage = 'user'`,
     [scope.workspaceId]
   );
 
