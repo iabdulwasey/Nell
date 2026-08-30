@@ -75,7 +75,21 @@ export function toTelegramHtml(markdown: string): string {
     .replaceAll(/(?<![*\w])\*([^*\n]+)\*(?![*\w])/gu, "<i>$1</i>")
     // Telegram has no headings; bold is the closest honest equivalent.
     .replaceAll(/^#{1,6}\s+(.+)$/gmu, "<b>$1</b>")
-    .replaceAll(/^[-*+]\s+/gmu, "• ");
+    .replaceAll(/^[-*+]\s+/gmu, "• ")
+    /**
+     * Three or more newlines become one blank line.
+     *
+     * The prompt asks for short paragraphs and the model mostly obliges, but a
+     * run of empty lines in a chat window is unreadable in a way it is not in a
+     * document — the message stops looking like speech. Normalised here as well
+     * as asked for there, because a rule enforced in code cannot be forgotten by
+     * a model having an off day.
+     */
+    .replaceAll(/\n{3,}/gu, "\n\n")
+    // Trailing spaces before a newline survive markdown and show up as ragged
+    // indentation once the markers are gone.
+    .replaceAll(/[ \t]+\n/gu, "\n")
+    .trim();
 
   return formatted.replaceAll(/\u0000CODE(\d+)\u0000/gu, (_match, index: string) => {
     return code[Number(index)] ?? "";

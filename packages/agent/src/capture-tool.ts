@@ -93,7 +93,9 @@ export function captureTool(options: CaptureToolOptions): ClientTool {
       "evidence, and they can see in one glance what you would need a paragraph to assert.\n\n" +
       "Do not use it for things that are not visual — a fact, a definition, a calculation, a " +
       "price you can simply state. A screenshot of an article is worse than quoting it. Use " +
-      "fetch_url when you want the words on a page, or a file.",
+      "fetch_url when you want the words on a page, or a file.\n\n" +
+      "One picture, not three. Pick the single page that settles the question; several " +
+      "near-identical maps is clutter, and the person has to open each one to find that out.",
     inputSchema: {
       type: "object",
       properties: {

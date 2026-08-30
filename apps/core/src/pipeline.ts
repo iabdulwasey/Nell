@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { runLoop } from "./agent-loop.js";
 import type { StoredFile } from "./documents.js";
 import { humanise } from "./failure.js";
+import { withoutThroatClearing } from "./opening.js";
 import type { CredentialOffer } from "./vault-secrets.js";
 
 export interface PipelineDeps {
@@ -203,8 +204,23 @@ export async function runPipeline(
               "- Compute what can be computed. Sun angle at a place and time, travel time,",
               "  totals, conversions — run the code rather than estimating in prose.",
               "",
-              "Do not pad. No exclamation marks, no 'perfect timing', no restating the question",
-              "before answering it. Enthusiasm is what an answer has instead of substance.",
+              /**
+               * A rule about the opening, not a list of banned words.
+               *
+               * The first version said "no exclamation marks, no 'perfect
+               * timing'" and the next reply began *"Perfect! Based on current
+               * weather conditions… here's your answer:"* — every banned phrase
+               * avoided and the behaviour unchanged, because a blocklist bans
+               * the examples rather than the habit. Naming what the first line
+               * must *be* leaves nowhere for a preamble to live.
+               */
+              "Open with the answer itself. Not 'Perfect', not 'Great question', not 'Based on",
+              "my research', not a restatement of what they asked, and not a sentence announcing",
+              "that an answer follows. The first line is the thing they wanted; everything else",
+              "supports it. Enthusiasm is what an answer has instead of substance.",
+              "",
+              "Plain prose and short paragraphs. No headings — this is a chat message, not a",
+              "document, and a message with four section titles is a report nobody asked for.",
               "",
               "Save every file you make into the directory named by the OUTPUT_DIR environment",
               "variable — os.environ['OUTPUT_DIR']. A file written anywhere else is not returned",
@@ -267,7 +283,18 @@ export async function runPipeline(
           produced.push({ path, name: file.name });
         }
 
-        carried = outcome.text;
+        /**
+         * The opening is trimmed here rather than asked for in the prompt.
+         *
+         * Asked three times, in three different shapes, and the reply still
+         * began *"Perfect! Based on today's weather conditions… here's your
+         * answer:"* — the rule quoted back and broken inside the same sentence.
+         * The prompt keeps asking, because a model that never writes a preamble
+         * is better than one whose preamble is removed afterwards; but the
+         * guarantee is in code now, because this project's whole argument is
+         * that anything depending on the model remembering is a convention.
+         */
+        carried = withoutThroatClearing(outcome.text);
         break;
       }
 

@@ -640,7 +640,30 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
     const fileIds: string[] = [];
 
     for (const block of parsed.data.content) {
-      if (block.type === "text" && block.text) said.push(block.text);
+      /**
+       * Adjacent text blocks are one continuous string, not one per paragraph.
+       *
+       * Pushing each block separately and joining with a blank line was fine
+       * while a reply arrived as a single block. With server-side search on, the
+       * vendor **splits a sentence around each citation** — so
+       *
+       *     "There's a Dense Fog Advisory active today, with cloudy skies early"
+       *
+       * comes back as three text blocks, and the join turned one sentence into
+       * three paragraphs, with the comma and the full stop stranded on lines of
+       * their own. Reported as "formatting in Telegram isn't perfect"; it was
+       * unreadable, and the cause was this line rather than the renderer.
+       *
+       * The blocks already carry their own spacing. A blank line belongs
+       * *between turns* — where the model genuinely stopped to use a tool — and
+       * that separation still happens below, because `said` is folded into
+       * `preamble` at exactly those points.
+       */
+      if (block.type === "text" && block.text) {
+        const last = said.length - 1;
+        if (last >= 0) said[last] = `${said[last]!}${block.text}`;
+        else said.push(block.text);
+      }
 
       if (block.type === "server_tool_use") {
         request.onStep?.(block.name === "web_search" ? "Searching." : "Working it out.");
