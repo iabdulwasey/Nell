@@ -18,7 +18,7 @@ import { verifyReceipt } from "@nell/memory";
 import { withWorkspace } from "./db.js";
 import { buildIndex, searchMemory } from "@nell/memory";
 import { deleteScope, renderReceipt } from "./deletion-store.js";
-import { memorySources } from "./memory-store.js";
+import { memorySources, readLedger, recordOutcome } from "./memory-store.js";
 
 const url = process.env["DATABASE_URL"];
 const describeDb = url ? describe : describe.skip;
@@ -202,5 +202,72 @@ describeDb("what the recall index is built from", () => {
     // Absent, not merely unreachable — there is nothing left to rank.
     expect(searchMemory(indexAfter, "Gurugram", { now: Date.now() })).toHaveLength(0);
     expect(indexAfter.some((entry) => entry.text.includes("Gurugram"))).toBe(false);
+  });
+});
+
+describeDb("what a finished task leaves behind", () => {
+  /**
+   * The gap that made every past task useless to the next one.
+   *
+   * `detail` has been on the ledger entry since v1, `recordTask` sanitises it
+   * and `renderPrecedents` prints it — and the input had no field for it, so
+   * every entry stored `{}` and the brain document read "Find Spider-Man
+   * showtimes: succeeded". Watched live: one task found the showtimes, recorded
+   * success, and the next searched for them again from nothing, because
+   * "succeeded" is not an answer.
+   */
+  it("records what it found, not only that it happened", async () => {
+    await withWorkspace(pool, scope, (client) =>
+      recordOutcome(client, scope, {
+        taskId: `t-${scope.workspaceId}`,
+        objective: "Find Spider-Man showtimes near Gurugram after 9pm",
+        outcome: "succeeded",
+        found: "Wave Cinemas, Sector 90 — 10:45 PM, seats available",
+      })
+    );
+
+    const entries = await withWorkspace(pool, scope, (client) => readLedger(client, scope, 5));
+    const entry = entries.find((row) => row.objective.includes("Spider-Man"));
+    expect(entry?.detail["found"]).toContain("10:45 PM");
+  });
+
+  /**
+   * Failures carry findings too, and that is the more useful half: "the site
+   * wanted a login" is the precedent that stops the same attempt being made the
+   * same way next week, where "failed" teaches nothing.
+   */
+  it("records why a failure failed", async () => {
+    await withWorkspace(pool, scope, (client) =>
+      recordOutcome(client, scope, {
+        taskId: `t2-${scope.workspaceId}`,
+        objective: "Book seats on bookmyshow",
+        outcome: "failed",
+        found: "bookmyshow blocks automated browsers",
+      })
+    );
+
+    const entries = await withWorkspace(pool, scope, (client) => readLedger(client, scope, 5));
+    const entry = entries.find((row) => row.objective.includes("bookmyshow"));
+    expect(entry?.detail["found"]).toContain("blocks automated browsers");
+  });
+
+  /**
+   * The record is durable and the sanitiser is what stands between it and a
+   * secret arriving in a payload. Asserted here rather than trusted, because a
+   * password written into a ledger is written for ever.
+   */
+  it("never lets a secret into the record", async () => {
+    await withWorkspace(pool, scope, (client) =>
+      recordOutcome(client, scope, {
+        taskId: `t3-${scope.workspaceId}`,
+        objective: "Sign in",
+        outcome: "succeeded",
+        found: "signed in fine",
+      })
+    );
+
+    const entries = await withWorkspace(pool, scope, (client) => readLedger(client, scope, 5));
+    const entry = entries.find((row) => row.objective === "Sign in");
+    expect(Object.keys(entry?.detail ?? {})).toEqual(["found"]);
   });
 });

@@ -66,6 +66,20 @@ export interface RecordTaskInput {
   readonly merchant?: string;
   readonly amount?: number;
   readonly currency?: string;
+  /**
+   * What the task actually found — not merely that it happened.
+   *
+   * The gap that made every past task useless to the next one. `detail` has been
+   * on `LedgerEntry` since v1, `recordTask` sanitises it, and `renderPrecedents`
+   * prints it — and this input had no field for it, so every entry stored `{}`
+   * and the brain document read *"Find Spider-Man showtimes: succeeded"*.
+   *
+   * Watched live: one task found the showtimes, recorded that it had succeeded,
+   * and the next task **searched for them again from nothing**, because
+   * "succeeded" is not an answer. A ledger of outcomes without findings records
+   * that work was done and destroys its only product.
+   */
+  readonly found?: string;
 }
 
 /**
@@ -90,6 +104,12 @@ export async function recordOutcome(
     ...(input.merchant ? { merchant: input.merchant } : {}),
     ...(input.amount !== undefined ? { amount: input.amount } : {}),
     ...(input.currency ? { currency: input.currency } : {}),
+    /**
+     * Through `recordTask` rather than into the row directly, because that is
+     * where `sanitizeDetail` strips anything shaped like a secret — a durable
+     * record is the last place a password should be able to arrive.
+     */
+    ...(input.found?.trim() ? { detail: { found: input.found.trim().slice(0, 500) } } : {}),
     now: Date.now(),
   });
 

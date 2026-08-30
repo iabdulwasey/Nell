@@ -1020,6 +1020,15 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         taskId: resuming ?? run.taskId,
         objective: resolved,
         outcome: outcome.ok ? "succeeded" : "failed",
+        /**
+         * What it found, so the next task does not start from nothing.
+         *
+         * Recorded for failures too, and that is the more useful half: *"the
+         * site wanted a login"* is precisely the precedent that stops the same
+         * attempt being made the same way next week, where "failed" teaches
+         * nothing.
+         */
+        found: outcome.ok ? outcome.answer || outcome.summary : outcome.reason,
       })
     ).catch(() => undefined);
   }
