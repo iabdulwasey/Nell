@@ -24,6 +24,7 @@ import {
   explainUnsupported,
   isBareReply,
   REFERENCE_CATALOG,
+  routeMessage,
   planWork,
   providerFor,
   unsupported,
@@ -32,6 +33,7 @@ import {
   type ModelCapability,
   type ModelProvider,
   type ProviderKeys,
+  type Task,
 } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
 import type { SearchProvider } from "@nell/integrations";
@@ -1402,6 +1404,8 @@ async function vaultCommand(
  */
 interface Running {
   readonly workspaceId: string;
+  /** The task itself, so the router can decide what a message is about. */
+  readonly task: Task;
   /** Drained by the loop at the start of each turn. */
   readonly steering: string[];
   readonly abort: AbortController;
@@ -1471,9 +1475,9 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
           /**
            * "Stop" is unambiguous and immediate.
            *
-           * Every other message is handed to the task as a correction, but this
-           * one cannot wait for the next turn to be considered — the whole point
-           * of saying it is that something is going wrong now.
+           * Every other message is routed, but this one cannot wait for the next
+           * turn to be considered — the whole point of saying it is that
+           * something is going wrong now.
            */
           if (/^(stop|cancel|abort|never ?mind)\b/iu.test(text)) {
             running.abort.abort();
@@ -1486,9 +1490,54 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
             continue;
           }
 
-          running.steering.push(text);
-          log("  ! steering the running task");
-          continue;
+          /**
+           * Is this a correction, or a different thing entirely?
+           *
+           * Everything used to be a correction. A message arriving while a task
+           * ran was pushed into it unconditionally, so asking *"what's the
+           * weather?"* during a flight booking became a correction to the
+           * booking — the request was lost and the task was told something
+           * irrelevant about the weather.
+           *
+           * `routeMessage` was built in v1 to decide exactly this and had never
+           * been called outside a package nothing imported. It answers
+           * `coordinator` when nothing ties the message to a task, which is the
+           * case this was getting wrong.
+           */
+          const target = routeMessage({ text }, [running.task], running.workspaceId);
+
+          if (target.kind === "task") {
+            running.steering.push(text);
+            log("  ! steering the running task");
+            continue;
+          }
+
+          if (target.kind === "ambiguous") {
+            // Asked rather than guessed: sending a "yes" to the wrong task is
+            // the failure this router exists to avoid.
+            await sendMessage({
+              token: options.telegramToken,
+              chatId: message.envelope.threadRef,
+              text: `Is that about "${running.task.label}", or something new?`,
+            });
+            continue;
+          }
+
+          /**
+           * A new request while something is running: queued, and said so.
+           *
+           * Queued rather than run alongside, because one workspace has one
+           * browser and two tasks driving it would be two people fighting over a
+           * pointer. Saying so is the part that matters — silence here reads as
+           * the message having been ignored, which is exactly what used to
+           * happen to it.
+           */
+          log("  → queued behind the running task");
+          await sendMessage({
+            token: options.telegramToken,
+            chatId: message.envelope.threadRef,
+            text: `Noted — I'll come to that once I've finished "${running.task.label}".`,
+          });
         }
 
         inbox.push(message);
@@ -1515,7 +1564,24 @@ export async function run(options: NellOptions, signal?: AbortSignal): Promise<v
     const abort = new AbortController();
     const steering: string[] = [];
     const workspaceId = message.userId ? accessScopeForUser(message.userId).workspaceId : undefined;
-    running = workspaceId ? { workspaceId, steering, abort } : undefined;
+    running = workspaceId
+      ? {
+          workspaceId,
+          steering,
+          abort,
+          task: {
+            id: message.envelope.threadRef,
+            workspaceId,
+            // The request itself is the label the router matches against, and
+            // the only description of this task that exists while it runs.
+            label: message.envelope.text.trim().slice(0, 120),
+            status: "running" as const,
+            spentAmount: 0,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        }
+      : undefined;
 
     /**
      * A "yes" that arrived before this task started.
