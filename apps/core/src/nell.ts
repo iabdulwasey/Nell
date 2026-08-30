@@ -67,6 +67,7 @@ import {
   remember,
 } from "./profile.js";
 import { decideFollowUp } from "./follow-up.js";
+import { describeLearned, learnFrom } from "./learn.js";
 import { classifyMidTask, type MidTaskIntent } from "./mid-task.js";
 import { assignmentFor, listKeys } from "./workspace-models.js";
 import { deleteScope, renderReceipt } from "./deletion-store.js";
@@ -74,7 +75,7 @@ import { memorySources } from "./memory-store.js";
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createFollowUp, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
-import { readDirectives, readLedger, recordOutcome } from "./memory-store.js";
+import { addRule, readDirectives, readLedger, recordOutcome } from "./memory-store.js";
 import {
   MIN_RECALL_TOKENS,
   PROMPT_RESERVE_TOKENS,
@@ -1100,6 +1101,48 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
    * Only for a task that succeeded and actually said something. There is nothing
    * to go back and correct about an answer that never arrived.
    */
+  /**
+   * Notice what they told us about themselves, and write it down.
+   *
+   * `run.objective` is **their message** — not the resolved objective, not the
+   * reply, not anything a page said. That choice is the security property: a
+   * page cannot plant a preference and neither can Nell's own answer, which
+   * quotes pages and would launder one into permanent memory where every future
+   * turn reloads it.
+   *
+   * After the reply, deliberately. This is a bonus on top of the answer they
+   * asked for, and making them wait on it would be the wrong trade — as would
+   * letting a failed extraction turn a delivered answer into a failed task.
+   */
+  await withWorkspace(options.pool, run.scope, async (client) => {
+    const learned = await learnFrom(run.objective, {
+      provider: run.model,
+      model: options.modelId,
+      known: profile.map((preference) => preference.key),
+    });
+    if (!learned) return;
+
+    for (const preference of learned.preferences) {
+      await remember(client, run.scope, { ...preference, provenance: "user" });
+    }
+    for (const rule of learned.rules) {
+      // `addRule` runs through the provenance gate, which is where an untrusted
+      // source is refused. Passing "user" here is a claim that gate enforces.
+      await addRule(client, run.scope, { ...rule, provenance: "user" });
+    }
+
+    const note = describeLearned(learned);
+    if (note) {
+      log(`  learned: ${note}`);
+      /**
+       * Told, briefly. A profile that changes without a word is one somebody
+       * discovers by being surprised months later — which is the exact shape of
+       * the competitor's own privacy scandal.
+       */
+      await reply(note);
+    }
+  }).catch(() => undefined);
+
   if (outcome.ok && said.trim() && run.threadRef) {
     await withWorkspace(options.pool, run.scope, async (client) => {
       const planned = await decideFollowUp(resolved, said, {
