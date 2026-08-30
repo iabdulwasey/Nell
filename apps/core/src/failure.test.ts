@@ -90,3 +90,36 @@ describe("what the user is told", () => {
     expect(alreadyReadable(written).message).toBe(written);
   });
 });
+
+/**
+ * A permanent failure told as a temporary one.
+ *
+ * The generic line ends "ask me again and I'll have another go", which is right
+ * for a page that timed out and wrong for a request the vendor refuses to parse.
+ * Watched live: the user was told to ask again, did, and got the identical
+ * failure — because nothing about asking again could change the shape of the
+ * request. Spending someone's time on our bug is worse than admitting ignorance.
+ */
+describe("a request the vendor could not parse", () => {
+  it("says it is ours and that retrying will not help", () => {
+    const said = humanise(
+      new Error("400 from the model: tools: Tool names must be unique.")
+    ).message;
+
+    expect(said).toContain("bug at my end");
+    expect(said).not.toContain("ask me again");
+    expect(said).not.toContain("another go");
+  });
+
+  it("keeps the vendor's words out of it", () => {
+    const said = humanise(new Error("400 invalid_request_error: unexpected field foo")).message;
+    expect(said).not.toContain("invalid_request_error");
+    expect(said).not.toContain("foo");
+  });
+
+  /** A page that timed out is still worth retrying, and must not be swept in. */
+  it("still invites a retry for something transient", () => {
+    const said = humanise(new Error("locator.click: Timeout 30000ms exceeded")).message;
+    expect(said).toContain("try again");
+  });
+});

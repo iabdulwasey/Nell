@@ -74,6 +74,30 @@ const PATTERNS: readonly { readonly test: RegExp; readonly message: string }[] =
     test: /ECONNABORTED|abort|cancell?ed/iu,
     message: "That took too long, so I stopped rather than leaving you waiting.",
   },
+  {
+    /**
+     * A malformed request, which is ours and will never come right on a retry.
+     *
+     * Found by causing one: a client tool named `web_search` shipped beside this
+     * vendor's server-side tool of the same name, and every assist task came
+     * back `400 … tools: Tool names must be unique.` The user was told *"ask me
+     * again and I'll have another go"* — so they asked again, and got the
+     * identical failure, because nothing about asking again could change the
+     * shape of the request.
+     *
+     * That is the distinction worth drawing and the generic line erases it: a
+     * page that timed out is worth retrying, and a request the vendor refuses to
+     * parse is worth reporting. Suggesting a retry that cannot succeed is worse
+     * than admitting ignorance, because it spends the person's time on our bug.
+     *
+     * Kept below the auth and quota branches, which are also permanent and name
+     * their cause more precisely.
+     */
+    test: /\b400\b|invalid[_ ]request|must be unique|unexpected.{0,20}(parameter|field)|field required/iu,
+    message:
+      "I'm asking the model wrong — that's a bug at my end, not something you said, and asking " +
+      "again won't help. That one's for Abdul.",
+  },
 ];
 
 const SCHEMA_REJECTION =

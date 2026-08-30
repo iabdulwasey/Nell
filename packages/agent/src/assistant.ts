@@ -545,10 +545,36 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
    */
   const tools: Record<string, unknown>[] = [];
   if (dialect.anthropic) {
-    if (request.search)
+    /**
+     * A server tool wins over a client tool of the same name.
+     *
+     * Both halves were right and together they were a 400. Searching became a
+     * client tool named `web_search` so that *every* vendor could search — and
+     * this vendor's own server-side searcher is called `web_search` too. Sending
+     * both is `tools: Tool names must be unique.`, which killed every assist
+     * task on the Anthropic path within an hour of the client tool shipping.
+     *
+     * The server one is kept where it exists because it is genuinely better:
+     * one request, no round trip, no snippets crossing this process. The client
+     * one exists for the vendors that have none.
+     *
+     * Written as a collision *rule* rather than a special case for this pair,
+     * because the next tool a vendor ships server-side will have a name somebody
+     * has already used, and the symptom is not one tool misbehaving — it is the
+     * entire path returning 400.
+     */
+    const serverToolNames = new Set<string>();
+    if (request.search) {
       tools.push({ type: "web_search_20250305", name: "web_search", max_uses: 5 });
-    if (request.code) tools.push({ type: "code_execution_20250522", name: "code_execution" });
+      serverToolNames.add("web_search");
+    }
+    if (request.code) {
+      tools.push({ type: "code_execution_20250522", name: "code_execution" });
+      serverToolNames.add("code_execution");
+    }
+
     for (const tool of request.tools ?? []) {
+      if (serverToolNames.has(tool.name)) continue;
       tools.push({
         name: tool.name,
         description: tool.description,
