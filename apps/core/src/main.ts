@@ -584,6 +584,28 @@ await run(
     capabilities: new Set<Capability>(anthropicKey ? ["assist", "browse"] : ["browse"]),
     /** What was done, chained so an edit to the record is detectable. */
     audit: (scope) => readAudit(pool, scope),
+    /**
+     * A deletion goes into the chain, and the chain survives the deletion.
+     *
+     * The one record that must outlive the data it describes — otherwise a
+     * feature that erases things also erases the proof it ran, which is
+     * indistinguishable from never having run. The digest goes in rather than
+     * the contents: what was deleted is exactly what should not be written down
+     * again.
+     */
+    recordDeletion: async (_scope, receipt) => {
+      await audit.record({
+        action: "memory.delete",
+        subject: `${receipt.scope}${receipt.source ? `:${receipt.source}` : ""}`,
+        detail: {
+          receiptId: receipt.id,
+          digest: receipt.digest,
+          totalRecords: receipt.totalRecords,
+          categories: receipt.categories.map((entry) => entry.category),
+        },
+        at: stamp(),
+      });
+    },
     memoryLink: form.memoryLink,
     ...(durableEngine
       ? { durably: <T>(name: string, fn: () => Promise<T>) => durableEngine.step(name, fn) }

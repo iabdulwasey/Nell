@@ -37,7 +37,17 @@ import {
 } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
 import type { SearchProvider } from "@nell/integrations";
-import { exportMemory, greeting, renderBrain } from "@nell/memory";
+import {
+  buildIndex,
+  deletionScopeSchema,
+  exportMemory,
+  greeting,
+  plan,
+  renderBrain,
+  renderRecalled,
+  searchMemory,
+  type DeletionReceipt,
+} from "@nell/memory";
 import type { VaultItemKind } from "@nell/vault";
 import { accessScopeForUser, type AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
@@ -59,6 +69,8 @@ import {
 import { decideFollowUp } from "./follow-up.js";
 import { classifyMidTask, type MidTaskIntent } from "./mid-task.js";
 import { assignmentFor, listKeys } from "./workspace-models.js";
+import { deleteScope, renderReceipt } from "./deletion-store.js";
+import { memorySources } from "./memory-store.js";
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
 import { cancelAll, createFollowUp, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
@@ -171,6 +183,14 @@ export interface NellOptions {
   };
   /** What was done, and whether the record of it still verifies. */
   readonly audit?: (scope: AccessScope) => Promise<AuditView>;
+  /**
+   * Write a deletion into the audit chain.
+   *
+   * The one record that must outlive the data it describes. Optional because an
+   * install with no audit sink still deletes correctly — it simply cannot prove
+   * afterwards that it did, which is a smaller loss than refusing to delete.
+   */
+  readonly recordDeletion?: (scope: AccessScope, receipt: DeletionReceipt) => Promise<void>;
   /**
    * A one-time link to read and edit `MEMORY.md`.
    *
@@ -359,6 +379,12 @@ export async function handleMessage(
     } else if (command === "/memory") {
       await ensureWorkspace(options, scope);
       await reply(await memoryCommand(options, scope, objective));
+    } else if (command === "/delete") {
+      await ensureWorkspace(options, scope);
+      await reply(await deleteCommand(options, scope, objective));
+    } else if (command === "/recall") {
+      await ensureWorkspace(options, scope);
+      await reply(await recallCommand(options, scope, objective));
     } else if (command === "/audit") {
       await ensureWorkspace(options, scope);
       await reply(await auditCommand(options, scope));
@@ -1335,6 +1361,101 @@ async function memoryCommand(
  * behind a button: a log that reports "valid" only when asked nicely is not
  * doing the job.
  */
+/**
+ * Deleting things, with a confirmation and a receipt.
+ *
+ * The confirmation is the whole reason this is two steps. Every other command
+ * here is recoverable — a forgotten note can be written again, a cancelled
+ * schedule re-made — and this one is not. A `/delete` that acted on the first
+ * message would eventually be typed by somebody exploring what the commands do.
+ *
+ * The token is the scope name repeated back. Not a yes/no: "yes" answers
+ * whatever question was last asked, and the last question is not always this
+ * one. Typing `history` is unambiguous about what is being agreed to.
+ */
+async function deleteCommand(
+  options: NellOptions,
+  scope: AccessScope,
+  text: string
+): Promise<string> {
+  const parts = text.split(/\s+/u).slice(1);
+  const asked = parts[0]?.toLowerCase();
+  const confirmed = parts[1]?.toLowerCase();
+
+  const scopes = deletionScopeSchema.options;
+  if (!asked || !scopes.includes(asked as (typeof scopes)[number])) {
+    return [
+      "What should I delete?",
+      "",
+      "• /delete memory — what I have learned about you: preferences and rules",
+      "• /delete history — the record of tasks I have done",
+      "• /delete account — everything, including your vault",
+      "",
+      "Nothing happens until you confirm. Your audit log is never deleted: it " +
+        "records that things happened, not what they were about.",
+    ].join("\n");
+  }
+
+  const what = asked as (typeof scopes)[number];
+
+  if (confirmed !== what) {
+    const categories = plan(what);
+    return [
+      `That deletes ${categories.join(", ")} — permanently, with no undo.`,
+      "",
+      // The scope repeated back rather than "yes": a bare yes answers whichever
+      // question was asked most recently, and that is not always this one.
+      `Send \`/delete ${what} ${what}\` to go ahead.`,
+    ].join("\n");
+  }
+
+  const requestedAt = Date.now();
+  const outcome = await withWorkspace(options.pool, scope, (client) =>
+    deleteScope(client, scope, what, requestedAt)
+  );
+
+  /**
+   * Written down, because a deletion is exactly the kind of thing somebody
+   * needs to be able to prove later — and because the chain surviving it is
+   * what makes the receipt worth anything.
+   */
+  await options.recordDeletion?.(scope, outcome.receipt);
+
+  return renderReceipt(outcome);
+}
+
+/**
+ * Searching what Nell knows, rather than reading all of it.
+ *
+ * `renderBrain` prints everything, which is right when the model reads it and
+ * wrong when a person asks a question. The recall index has existed since v2 —
+ * rarity-weighted term matching, recency decay, an embedding seam — and had no
+ * caller, so the one thing it is for was unreachable.
+ *
+ * The index is built per query rather than stored. That is not a shortcut: it is
+ * the property the whole design rests on — an entry that cannot name a live
+ * source does not exist, so deleting the source deletes the derived copy **by
+ * construction**, with no sweep to remember and no cascade to get right.
+ */
+async function recallCommand(
+  options: NellOptions,
+  scope: AccessScope,
+  text: string
+): Promise<string> {
+  const query = text.slice("/recall".length).trim();
+  if (!query) return "What should I look for? Try `/recall flights to Delhi`.";
+
+  const sources = await withWorkspace(options.pool, scope, (client) =>
+    memorySources(client, scope)
+  );
+  if (sources.length === 0) return "I have not learned anything about you yet.";
+
+  const index = await buildIndex(sources);
+  const hits = searchMemory(index, query, { now: Date.now() });
+
+  return hits.length === 0 ? `Nothing I know bears on "${query}".` : renderRecalled(hits);
+}
+
 async function auditCommand(options: NellOptions, scope: AccessScope): Promise<string> {
   if (!options.audit) return "This install is not keeping an audit log.";
 

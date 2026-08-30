@@ -190,6 +190,16 @@ export function greeting(): string {
     "- /vault — logins I can sign in with, and how to add one",
     "- /schedules — anything I'm doing on a repeat, and /stop to cancel",
     "- /models — what this install can do, and which key would add the rest",
+    "- /recall <anything> — search what I know, rather than reading all of it",
+    /**
+     * Listed rather than hidden, and last.
+     *
+     * A product whose pitch is honest deletion has to make deleting findable —
+     * one that buries it is making the same claim the incumbent made and doing
+     * the same thing with it. Last because it is the one command here that
+     * cannot be undone.
+     */
+    "- /delete — remove what I know, what I have done, or everything",
     "",
     "What do you need?",
   ].join("\n");

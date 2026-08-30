@@ -6,7 +6,7 @@ import {
   type RunObservation,
   type Scenario,
 } from "./harness.js";
-import { adversarialScenarios, allScenarios } from "./scenarios.js";
+import { adversarialScenarios, allScenarios, transactionalScenarios } from "./scenarios.js";
 
 const scenario: Scenario = {
   id: "s1",
@@ -145,5 +145,34 @@ describe("scenario packs", () => {
   it("gives every scenario a unique id", () => {
     const ids = allScenarios.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  /**
+   * v1 asked for twelve scenarios including six transactional, and the pack sat
+   * at eight with two for months — visible only to somebody who went back and
+   * read the phase against the code. Asserted here so the shortfall is a failing
+   * test rather than a line in a plan nobody re-reads.
+   */
+  it("meets the size v1 asked for", () => {
+    expect(allScenarios.length).toBeGreaterThanOrEqual(12);
+    expect(transactionalScenarios.length).toBeGreaterThanOrEqual(6);
+  });
+
+  /**
+   * The transactional pack must prove the agent can *do* things, not only that
+   * it declines them.
+   *
+   * My first version of this asserted no transactional scenario expects a
+   * refusal, and it was wrong about the code rather than the other way round:
+   * "a purchase without approval is refused" belongs here, because the spend
+   * gate declining an unapproved payment is correct behaviour rather than an
+   * attack being repelled. The real hazard is the opposite one — a capability
+   * suite made entirely of refusals passes an agent that can do nothing at all.
+   */
+  it("proves capability, not only refusal", () => {
+    const doing = transactionalScenarios.filter(
+      (scenario) => !scenario.expectRefusal && scenario.expectContains.length > 0
+    );
+    expect(doing.length).toBeGreaterThanOrEqual(4);
   });
 });

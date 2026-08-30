@@ -30,6 +30,7 @@ import {
 } from "@nell/memory";
 import type { AccessScope } from "@nell/shared";
 import { randomUUID } from "node:crypto";
+import type { SourceRecord } from "@nell/memory";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 
@@ -271,4 +272,51 @@ function explainRejection(reason: string): string {
     default:
       return "I couldn't save that rule.";
   }
+}
+
+/**
+ * Everything the recall index can be built from, as one list.
+ *
+ * The index's own rule is that an entry must name a live source, so this query
+ * *is* the definition of what exists — and deleting a row here deletes the
+ * derived entry by construction, with no sweep to remember. Playbooks are absent
+ * because no recipe is loaded at runtime; adding one is a fourth branch here
+ * rather than a change to anything downstream.
+ */
+export async function memorySources(
+  client: PoolClient,
+  scope: AccessScope
+): Promise<readonly SourceRecord[]> {
+  const { rows } = await client.query<{
+    kind: string;
+    id: string;
+    text: string;
+    at: Date;
+    importance: number | null;
+  }>(
+    /**
+     * Column names taken from the schema rather than from memory — the first
+     * version of this query invented `instruction` and `created_at`, and no
+     * unit test could catch it because the mistake only exists against a real
+     * database. Running it once found all three.
+     */
+    `SELECT 'preference' AS kind, id, (key || ': ' || value) AS text,
+            observed_at AS at, NULL::int AS importance
+       FROM preferences WHERE workspace_id = $1 AND superseded_by IS NULL
+     UNION ALL
+     SELECT 'directive', id, rule, created_at, NULL::int
+       FROM directives WHERE workspace_id = $1 AND revoked_at IS NULL
+     UNION ALL
+     SELECT 'ledger', id::text, (objective || ' — ' || outcome), completed_at, NULL::int
+       FROM task_ledger WHERE workspace_id = $1`,
+    [scope.workspaceId]
+  );
+
+  return rows.map((row) => ({
+    kind: row.kind as SourceRecord["kind"],
+    id: row.id,
+    text: row.text,
+    at: row.at.getTime(),
+    ...(row.importance === null ? {} : { importance: row.importance }),
+  }));
 }
