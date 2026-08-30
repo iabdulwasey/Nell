@@ -8,7 +8,13 @@ import {
   type ModelCapability,
 } from "@nell/agent";
 import { estimateMonthlyCost, formatAmount, settingsProblems, tierPanel } from "@nell/views";
-import { capabilities, modelAssignment, selectedModels, storedKeys } from "@/lib/core";
+import {
+  capabilities,
+  CAPABILITY_ROUTING,
+  modelAssignment,
+  selectedModels,
+  storedKeys,
+} from "@/lib/core";
 
 export const dynamic = "force-dynamic";
 
@@ -161,8 +167,19 @@ export default async function SettingsPage() {
             </span>
           </div>
           <div className="muted" style={{ marginTop: 6 }}>
-            Set <span className="mono">NELL_MODEL_{capability.toUpperCase()}</span> to a model or a
-            vendor name. {VENDORS_FOR[capability]}
+            {/* A setting that quietly does nothing is worse than one that is
+                absent, so a job the product does not yet route says so instead
+                of accepting a value and ignoring it. */}
+            {CAPABILITY_ROUTING[capability] ? (
+              <>
+                <span className="tag">not selectable</span> {CAPABILITY_ROUTING[capability]}
+              </>
+            ) : (
+              <>
+                Set <span className="mono">NELL_MODEL_{capability.toUpperCase()}</span> to a model
+                or a vendor name. {VENDORS_FOR[capability]}
+              </>
+            )}
           </div>
         </div>
       ))}

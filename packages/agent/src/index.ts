@@ -9,6 +9,13 @@
  */
 
 export {
+  MAX_TOOL_RESULTS,
+  searchTool,
+  type SearchToolOptions,
+  type WebSearch,
+} from "./search-tool.js";
+
+export {
   DEFAULT_IMAGE_MODEL,
   imageTool,
   type ImageToolOptions,

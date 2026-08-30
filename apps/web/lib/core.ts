@@ -29,6 +29,7 @@ import {
   overridesFromEnv,
   type Assignment,
   type CapabilityReport,
+  type ModelCapability,
 } from "@nell/agent";
 import { appendEntry, verifyChain, type AuditEntry } from "@nell/audit";
 import type { PurchasePayload } from "@nell/aegis";
@@ -380,6 +381,32 @@ export function capabilities(): CapabilityReport {
     new Set(storedKeys().map((key) => key.provider))
   );
 }
+
+/**
+ * Capabilities the running product actually consults the assignment for.
+ *
+ * The distinction this page cannot be allowed to blur. `image` is routed: the
+ * picture tool is built from whatever the assignment resolves. The four served
+ * by the assist path — reasoning, reading, searching, running code — resolve to
+ * a model and then reach an implementation that **speaks Anthropic and nothing
+ * else**, because its value is that vendor's server-side search and sandbox,
+ * which resolve inside one request. And nothing in the product consumes `audio`
+ * or `embed` at all yet.
+ *
+ * Shown rather than hidden, for the reason the whole screen exists: a setting
+ * that quietly does nothing is worse than a setting that is absent. A person who
+ * assigns web search to another vendor and sees the row accept it has been told
+ * something untrue by software whose entire pitch is that it tells the truth.
+ */
+export const CAPABILITY_ROUTING: Readonly<Record<ModelCapability, string | undefined>> = {
+  text: "Runs on the default model, which must be an Anthropic one today.",
+  vision: "Runs on the default model, which must be an Anthropic one today.",
+  search: "Runs on the default model's own web search — not separately selectable yet.",
+  code: "Runs in the default model's own sandbox — not separately selectable yet.",
+  image: undefined,
+  audio: "Nothing in Nell uses speech yet.",
+  embed: "Recall works without embeddings today; nothing uses this yet.",
+};
 
 export function ago(at: number, reference: number = Date.now()): string {
   const seconds = Math.max(0, Math.round((reference - at) / 1000));

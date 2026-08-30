@@ -18,6 +18,7 @@ import {
   fetchTool,
   imageTool,
   MAX_DOWNLOAD_BYTES,
+  searchTool,
   type BrowserFetch,
   type Capability,
 } from "@nell/agent";
@@ -175,6 +176,17 @@ const anthropicKey = process.env["ANTHROPIC_API_KEY"];
 const googleKey = process.env["GOOGLE_API_KEY"];
 
 /**
+ * The search vendor, declared before the tools that use it.
+ *
+ * Reachable with an Anthropic key the way Brave's is reachable with a Brave
+ * key, and independent of `NELL_MODEL`: a workspace driving its agent with
+ * DeepSeek or a local model still searches through this. That independence is
+ * the point — it is what lets searching be offered to every model rather than
+ * only to one whose vendor happens to search server-side.
+ */
+const search = anthropicKey ? anthropicSearchProvider({ apiKey: anthropicKey }) : undefined;
+
+/**
  * What the model may reach for mid-task.
  *
  * `fetch_url` is unconditional: it needs no vendor and no key, only this
@@ -242,8 +254,59 @@ const drawer = drawerFor(assignment, (vendor) =>
   vendor === "google" ? googleKey : vendor === "openai" ? process.env["OPENAI_API_KEY"] : undefined
 );
 
+/**
+ * Which model does the reasoning, reading, searching and code — the assist path.
+ *
+ * **It was the literal string `"claude-sonnet-4-5"`**, so `NELL_MODEL` changed
+ * which model *browsed* and left every other kind of task on Sonnet. Setting
+ * `anthropic/claude-opus-5` and watching nothing change is the sort of bug that
+ * never produces an error: the work still happens, on the wrong model, and the
+ * only symptom is a bill and a quality difference nobody can attribute.
+ *
+ * **The limit, stated where it actually falls.** `assist` speaks Anthropic's
+ * Messages API today, so a non-Anthropic default cannot serve this path yet and
+ * quietly running on Claude anyway would have the settings screen lying about
+ * which account is billed. It says so at boot instead of pretending.
+ *
+ * That limit is an implementation gap and not a property of the design, which is
+ * worth being precise about because the two call for different work. Of the four
+ * jobs this path does, **three are not vendor features at all**: reasoning and
+ * reading are what every model does, and searching is an HTTP call to a search
+ * vendor that any model able to call a function can make — which is what
+ * `searchTool` is, and why it is supplied to every model rather than only to one
+ * that happens to have a server-side searcher. **Running code is the real
+ * exception**: a sandbox is not a call we can make on somebody's behalf, and
+ * running model-authored code in one we own is a security decision the
+ * architecture defers deliberately.
+ */
+const assist = ((): { apiKey: string; model: string } | undefined => {
+  if (!anthropicKey) return undefined;
+
+  const [vendor, ...rest] = assignment.defaultModel.split("/");
+  const named = rest.join("/");
+  if (vendor !== "anthropic" || !named) {
+    console.log(
+      `note: ${assignment.defaultModel} cannot answer questions, read documents, search or run ` +
+        `code — that path speaks Anthropic only. Those jobs are unavailable until the default ` +
+        `model is an Anthropic one.`
+    );
+    return undefined;
+  }
+
+  return { apiKey: anthropicKey, model: named };
+})();
+
 const specialists = [
   fetchTool({ viaBrowser }),
+  /**
+   * Search as a tool, not as a vendor feature.
+   *
+   * Anthropic's server-side search is better where it exists — one request, no
+   * snippets crossing this process — and stays on for that vendor. This is the
+   * same capability for every other model, and the reason the assist path does
+   * not have to be Anthropic-shaped for anything except running code.
+   */
+  ...(search ? [searchTool({ search: (query) => search.search(query) })] : []),
   ...(drawer
     ? [
         imageTool({
@@ -254,7 +317,6 @@ const specialists = [
       ]
     : []),
 ];
-const search = anthropicKey ? anthropicSearchProvider({ apiKey: anthropicKey }) : undefined;
 
 /**
  * The page a password is typed into, served on loopback.
@@ -414,7 +476,7 @@ await run(
      * per-capability choice an admin had made.
      */
     ...(Object.keys(assignment.overrides).length > 0 ? { assignment: assignment.overrides } : {}),
-    ...(anthropicKey ? { assistKey: anthropicKey, assistModel: "claude-sonnet-4-5" } : {}),
+    ...(assist ? { assistKey: assist.apiKey, assistModel: assist.model } : {}),
     ...(specialists.length > 0 ? { tools: specialists } : {}),
     ...(vault && form && vaultKeys
       ? {
