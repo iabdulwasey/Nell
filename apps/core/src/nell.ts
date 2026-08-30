@@ -56,8 +56,9 @@ import {
   readProfile,
   remember,
 } from "./profile.js";
+import { decideFollowUp } from "./follow-up.js";
 import { describeSchedule, parseScheduleRequest } from "./schedule-request.js";
-import { cancelAll, createSchedule, listSchedules } from "./schedules.js";
+import { cancelAll, createFollowUp, createSchedule, listSchedules } from "./schedules.js";
 import { runPipeline } from "./pipeline.js";
 import { readDirectives, readLedger, recordOutcome } from "./memory-store.js";
 import {
@@ -983,6 +984,38 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
   ).catch(() => undefined);
 
   await reply(said);
+
+  /**
+   * Decide whether to look at this again later.
+   *
+   * After the reply, deliberately: the answer is what they asked for, and making
+   * them wait on a decision about a message they have not asked for would be the
+   * wrong trade. Failures are swallowed for the same reason — a follow-up that
+   * could not be arranged is a missing bonus, not a failed task.
+   *
+   * Only for a task that succeeded and actually said something. There is nothing
+   * to go back and correct about an answer that never arrived.
+   */
+  if (outcome.ok && said.trim() && run.threadRef) {
+    await withWorkspace(options.pool, run.scope, async (client) => {
+      const planned = await decideFollowUp(resolved, said, {
+        provider: run.model,
+        model: options.modelId,
+      });
+      if (!planned) return;
+
+      await createFollowUp(client, run.scope, {
+        label: planned.label,
+        recheck: planned.recheck,
+        runAt: planned.runAt,
+        original: planned.original,
+        threadRef: run.threadRef,
+      });
+      log(
+        `  will check again in ${String(Math.round((planned.runAt - Date.now()) / 60_000))}m: ${planned.label}`
+      );
+    }).catch(() => undefined);
+  }
 
   /**
    * Fold anything that has fallen out of the recent window, now the user is not

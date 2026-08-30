@@ -17,15 +17,20 @@
  */
 
 import type { BrowserExecutor } from "@nell/aegis";
-import type { ModelProvider } from "@nell/agent";
+import { assist, type ClientTool, type ModelProvider } from "@nell/agent";
 import type { BrowserProvider } from "@nell/browser";
 import type { SearchProvider } from "@nell/integrations";
 import type { AccessScope } from "@nell/shared";
 import type { Pool } from "pg";
 import { runLoop } from "./agent-loop.js";
 import { withWorkspace } from "./db.js";
-import { claimDue, completeRun, recordIfNew, type Schedule } from "./schedules.js";
+import { claimDue, completeRun, FOLLOW_UP, recordIfNew, type Schedule } from "./schedules.js";
+import { z } from "zod";
+import { verdictOn } from "./follow-up.js";
 import type { WorkspaceSessions } from "./workspace-session.js";
+
+/** What `createFollowUp` wrote on the row, read back here. */
+const followUpConfig = z.object({ kind: z.literal("follow-up"), original: z.string() });
 
 export interface TickerDeps {
   readonly pool: Pool;
@@ -48,6 +53,18 @@ export interface TickerDeps {
    */
   readonly clock?: () => number;
   readonly log?: (line: string) => void;
+  /**
+   * Key and model for the assist path, when this install has one.
+   *
+   * A follow-up looks something up and compares it to what was said; it drives
+   * no page and needs no session. Running it through the browser loop — which is
+   * what every scheduled thing did before, because that was the only runner —
+   * would open a browser to read a forecast.
+   */
+  readonly assistKey?: string;
+  readonly assistModel?: string;
+  readonly assistBaseUrl?: string;
+  readonly tools?: readonly ClientTool[];
 }
 
 export const TICK_MS = 60_000;
@@ -97,6 +114,11 @@ async function runSchedule(
   scope: AccessScope,
   schedule: Schedule
 ): Promise<void> {
+  if (schedule.checkType === FOLLOW_UP) {
+    await runFollowUp(deps, scope, schedule);
+    return;
+  }
+
   deps.log?.(`running schedule: ${schedule.label}`);
 
   const session = await deps.sessions.acquire(scope);
@@ -140,6 +162,72 @@ async function runSchedule(
   }
 
   await deps.send(schedule.threadRef, `${schedule.label}\n\n${body}`);
+}
+
+/**
+ * Look again at something already answered, and speak only if it changed.
+ *
+ * The whole value is in the second half. A follow-up that arrives to say "still
+ * fine" is the notification that teaches someone to stop reading them — which
+ * costs them the one that mattered. So the default is silence, the bar for
+ * speaking is that the *advice* has changed rather than that the *conditions*
+ * have, and what gets sent corrects the specific thing that was said rather than
+ * restating the situation.
+ */
+async function runFollowUp(
+  deps: TickerDeps,
+  scope: AccessScope,
+  schedule: Schedule
+): Promise<void> {
+  deps.log?.(`following up: ${schedule.label}`);
+
+  if (!schedule.threadRef || !deps.assistKey) return;
+
+  const config = followUpConfig.safeParse(schedule.config);
+  if (!config.success) {
+    // Written by `createFollowUp` and read here; a row that does not parse is a
+    // bug rather than a user's problem, and there is nothing useful to send.
+    deps.log?.(`follow-up ${schedule.label}: unreadable config`);
+    return;
+  }
+
+  const looked = await assist({
+    apiKey: deps.assistKey,
+    model: deps.assistModel ?? "anthropic/claude-sonnet-4-5",
+    ...(deps.assistBaseUrl ? { baseUrl: deps.assistBaseUrl } : {}),
+    system:
+      "Check the current state of the thing described. Report only what you find — do not " +
+      "give advice and do not write a message to anybody. Be specific and quantitative.",
+    prompt: schedule.prompt,
+    search: true,
+    code: false,
+    ...(deps.tools?.length ? { tools: deps.tools } : {}),
+  });
+
+  if (!looked.ok) {
+    /**
+     * A failed look is silent, and that is deliberate.
+     *
+     * A recurring briefing that stops arriving is reported, because its absence
+     * is indistinguishable from having nothing to say and the user is expecting
+     * it. Nobody is expecting this one — it was never promised — so "I tried to
+     * check something you didn't ask me to check and it didn't work" is noise.
+     */
+    deps.log?.(`follow-up ${schedule.label} failed: ${looked.reason}`);
+    return;
+  }
+
+  const message = await verdictOn(config.data.original, looked.text, {
+    provider: deps.model,
+    model: deps.modelId,
+  });
+
+  if (!message) {
+    deps.log?.(`follow-up ${schedule.label}: advice still stands, saying nothing`);
+    return;
+  }
+
+  await deps.send(schedule.threadRef, message);
 }
 
 /**

@@ -480,6 +480,16 @@ const ticking = resolvedModel.ok
         executor,
         model: resolvedModel.provider,
         modelId,
+        /**
+         * So a follow-up can look something up without opening a browser.
+         *
+         * The ticker only knew the browse loop, because that was the only
+         * runner when it was written — a scheduled "check the forecast" would
+         * have launched Chromium to read a weather page.
+         */
+        ...(assist ? { assistKey: assist.apiKey, assistModel: assist.model } : {}),
+        ...(assist?.baseUrl ? { assistBaseUrl: assist.baseUrl } : {}),
+        ...(specialists.length > 0 ? { tools: specialists } : {}),
         ...(search ? { search } : {}),
         send: (threadRef, text) => sendMessage({ token: token!, chatId: threadRef, text }),
         log: (line) => {
