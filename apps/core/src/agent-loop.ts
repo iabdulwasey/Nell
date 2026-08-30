@@ -28,6 +28,13 @@ import { renderFindings, searchWeb, type SearchProvider } from "@nell/integratio
 import type { BrowserExecutor } from "@nell/aegis";
 import { detectBlock, explainBlock, type BrowserProvider, type PageSnapshot } from "@nell/browser";
 import type { AccessScope } from "@nell/shared";
+import {
+  REPEATING_AFTER,
+  RepeatWatch,
+  repetitionWarning,
+  turnSignature,
+  type Repetition,
+} from "./repetition.js";
 import type { CredentialOffer } from "./vault-secrets.js";
 
 /**
@@ -276,6 +283,14 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
    * the failure this exists to fix.
    */
   let objective = request.objective;
+  /**
+   * What the last turn did, so the same thing four times running is noticed.
+   *
+   * The bound the seat-selection disaster needed: 41 clicks on one button, each
+   * described differently and every one identical in deed.
+   */
+  const watch = new RepeatWatch();
+  let repeats: Repetition = { count: 0, warn: false, giveUp: false };
   /** Consecutive failures to read the page at all. Reset by any successful look. */
   let unreadable = 0;
   /** Times the agent has been sent back to finish the job. */
@@ -344,6 +359,8 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
         history.length = 0;
         instructions.length = 0;
         outstanding = [];
+        // A new goal is not a repeat of the old one, whatever it does next.
+        watch.reset();
         request.onDiagnostic?.(`redirected: ${steer.objective}`);
       } else {
         instructions.push(steer.constraint);
@@ -450,7 +467,22 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
      */
     if (!seen.has(fingerprint)) {
       seen.add(fingerprint);
-      lastProgressAt = clock();
+      /**
+       * …and novelty is still not enough, which is the second half of the same
+       * lesson and cost 245 steps to learn.
+       *
+       * Reducing a seat selection to two, the agent drove it 2 → 4 → 5 → 6 → 7
+       * → 8 → 9 → 10, believing every turn that it was deselecting. Each click
+       * genuinely changed the page, so each fingerprint was genuinely new, `seen`
+       * grew forever and this clock reset every single turn. It was not standing
+       * still and not going in circles — it was moving steadily *away* from the
+       * goal, and "somewhere new" cannot tell that from "somewhere better".
+       *
+       * So a turn that repeats the previous turn's action buys no time, however
+       * new the page it lands on. Doing the same thing and getting a different
+       * result is not progress; it is the definition of the problem.
+       */
+      if (repeats.count < REPEATING_AFTER) lastProgressAt = clock();
     }
 
     /**
@@ -708,6 +740,50 @@ export async function runLoop(deps: LoopDeps, request: LoopRequest): Promise<Loo
         `${hostOf(revisit.url)} already refused to load twice. It will not work. ` +
           `Find the answer somewhere else.`
       );
+      continue;
+    }
+
+    /**
+     * Is this the same thing again?
+     *
+     * Checked before the actions run rather than after, so the warning reaches
+     * the model on the turn it would otherwise waste — and so a task that has
+     * exhausted its patience stops without paying for one more click.
+     *
+     * The signature resolves refs against this turn's snapshot, which is the
+     * whole trick: a ref carries a version that changes every look, so without
+     * that resolution 41 clicks on one button carry 41 different signatures and
+     * read as 41 different ideas.
+     */
+    const signature = turnSignature(planned.plan.actions, snapshot);
+    repeats = watch.saw(signature);
+
+    if (repeats.giveUp && signature) {
+      request.onDiagnostic?.(`gave up: ${signature} repeated ${String(repeats.count)} times`);
+      return {
+        ok: false,
+        steps: step,
+        stuck: true,
+        reason: partial
+          ? `I kept trying the same thing and it kept not working, so I stopped.\n\n` +
+            `What I had so far:\n\n${partial}`
+          : `I kept trying the same thing and it kept not working, so I stopped rather ` +
+            `than keep going.`,
+      };
+    }
+
+    if (repeats.warn && signature) {
+      /**
+       * Told once, plainly, before giving up on it.
+       *
+       * The model genuinely does not notice — every one of the 41 attempts was
+       * narrated as a fresh idea ("the exact center", "the middle-left area"),
+       * which is a model reasoning hard about the wrong thing rather than one
+       * being careless. A specific count and the action named is what leaves it
+       * nowhere to go except somewhere else.
+       */
+      request.onDiagnostic?.(`repeating: ${signature} (${String(repeats.count)}x)`);
+      history.push(repetitionWarning(signature, repeats.count));
       continue;
     }
 

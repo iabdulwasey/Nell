@@ -186,11 +186,41 @@ describe("when a step fails on the page", () => {
       },
     } as unknown as BrowserProvider;
 
+    /**
+     * A *different* thing each turn, which is what genuine progress looks like.
+     *
+     * The shared `model()` helper clicks the same target every time — which was
+     * fine while progress meant "the page changed", and now correctly reads as a
+     * rut. The claim this test makes is about a long task that is getting
+     * somewhere, so its fixture has to actually get somewhere.
+     */
+    let turn = 0;
+    const advancing = {
+      name: "stub",
+      complete: async () => {
+        turn += 1;
+        const done = turn >= 15;
+        return {
+          ok: true,
+          value: {
+            reasoning: `step ${String(turn)}`,
+            done,
+            answer: done ? "the answer" : "",
+            search: "",
+            actions: done
+              ? []
+              : [{ action: "click", target: { by: "text", text: `Go ${String(turn)}` } }],
+          },
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    } as unknown as ModelProvider;
+
     const outcome = await runLoop(
       {
         provider: moving,
         executor: executor(0).executor,
-        model: model(15),
+        model: advancing,
         modelId: "m",
         clock: () => now,
       },
@@ -670,6 +700,155 @@ describe("when a step fails on the page", () => {
     // The goal survives, and so does what has already been attempted.
     expect(afterRefine).toContain("sec 90");
     expect(afterRefine).toContain("Tried approach 1");
+  });
+
+  /**
+   * The run that made this necessary, reproduced.
+   *
+   * Booking cinema seats, the agent clicked one "Proceed" button 41 times and
+   * then drove a seat selection 2 → 4 → 5 → 6 → 7 → 8 → 9 → 10 while believing
+   * it was reducing it. 245 steps, ended by a timer.
+   *
+   * Both existing bounds missed it for the same reason: **every click genuinely
+   * changed the page.** A new seat count is a new fingerprint, so `seen` grew
+   * forever, the stall clock reset every turn, and nothing was standing still or
+   * going in circles. It was moving steadily away from the goal.
+   */
+  it("stops clicking the same button on a page that changes every time", async () => {
+    let now = 0;
+    const moving = {
+      snapshot: async () => {
+        // The seat counter, in effect: a genuinely different page every turn.
+        now += 1000;
+        return {
+          url: `https://cinema.example/seats?selected=${String(now)}`,
+          title: "Seats",
+          nodes: [{ ref: `${String(now)}:e7`, role: "button", name: "Proceed" }],
+          text: "",
+          truncated: false,
+        };
+      },
+    } as unknown as BrowserProvider;
+
+    let turn = 0;
+    /** Reworded every time, exactly as the real one was. Identical in deed. */
+    const insisting = {
+      name: "stub",
+      complete: async () => {
+        turn += 1;
+        const excuses = [
+          "Clicking Proceed to continue with the booking",
+          "Clicking Proceed — this time on the exact center of the button",
+          "Trying a different approach, targeting the button text",
+          "Clicking the middle-left area of the Proceed button",
+        ];
+        return {
+          ok: true,
+          value: {
+            reasoning: excuses[turn % excuses.length],
+            done: false,
+            answer: "",
+            search: "",
+            // The ref changes every snapshot; the button does not.
+            actions: [{ action: "click", target: { by: "ref", ref: `${String(now)}:e7` } }],
+          },
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    } as unknown as ModelProvider;
+
+    const outcome = await runLoop(
+      {
+        provider: moving,
+        executor: executor(0).executor,
+        model: insisting,
+        modelId: "m",
+        clock: () => now,
+      },
+      { scope, sessionId: "s", objective: "book 2 seats", stallMs: 5 * 60_000 }
+    );
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.stuck).toBe(true);
+    // Ended on its own judgement, long before the 41 the real run managed.
+    expect(outcome.steps).toBeLessThan(15);
+    expect(outcome.reason).toContain("same thing");
+  });
+
+  /**
+   * Told before being given up on, because the model genuinely does not notice —
+   * every one of those 41 attempts was reasoned about as a fresh idea. A model
+   * that changes its mind when told keeps its task.
+   */
+  it("tells the model it is repeating, and carries on if it listens", async () => {
+    const notes: string[] = [];
+    let now = 0;
+    const moving = {
+      snapshot: async () => {
+        now += 1000;
+        return {
+          url: `https://cinema.example/seats?selected=${String(now)}`,
+          title: "Seats",
+          nodes: [
+            { ref: `${String(now)}:e7`, role: "button", name: "Proceed" },
+            { ref: `${String(now)}:e8`, role: "button", name: "Continue" },
+          ],
+          text: "",
+          truncated: false,
+        };
+      },
+    } as unknown as BrowserProvider;
+
+    let turn = 0;
+    const listens = {
+      name: "stub",
+      complete: async () => {
+        turn += 1;
+        // Insists four times, is told, then tries something else and finishes.
+        const stubborn = turn <= 4;
+        return {
+          ok: true,
+          value: {
+            reasoning: stubborn ? "Clicking Proceed again" : "Trying the other button",
+            done: turn > 6,
+            answer: turn > 6 ? "Booked" : "",
+            search: "",
+            actions:
+              turn > 6
+                ? []
+                : [
+                    {
+                      action: "click",
+                      target: { by: "ref", ref: `${String(now)}:e${stubborn ? "7" : "8"}` },
+                    },
+                  ],
+          },
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+    } as unknown as ModelProvider;
+
+    const outcome = await runLoop(
+      {
+        provider: moving,
+        executor: executor(0).executor,
+        model: listens,
+        modelId: "m",
+        clock: () => now,
+      },
+      {
+        scope,
+        sessionId: "s",
+        objective: "book 2 seats",
+        stallMs: 5 * 60_000,
+        onDiagnostic: (note) => notes.push(note),
+      }
+    );
+
+    expect(notes.some((note) => note.startsWith("repeating:"))).toBe(true);
+    // It listened, so it kept its task.
+    expect(outcome.ok).toBe(true);
   });
 
   /**
