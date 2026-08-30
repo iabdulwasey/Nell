@@ -27,71 +27,15 @@
  * with the BYOK dashboard, where a user is choosing among keys they own.
  */
 
-import {
-  modelCapabilitySchema,
-  REFERENCE_CATALOG,
-  resolveCapabilities,
-  type Assignment,
-  type ImageVendor,
-  type ModelCapability,
-} from "@nell/agent";
+import { catalogLookup, resolveCapabilities, type Assignment, type ImageVendor } from "@nell/agent";
 
-/**
- * `NELL_MODEL_IMAGE=openai/gpt-image-1` and friends.
- *
- * One variable per capability, named after it, so adding a capability does not
- * mean inventing a naming scheme for it.
- */
-export function overridesFromEnv(
-  env: NodeJS.ProcessEnv
-): Readonly<Partial<Record<ModelCapability, string>>> {
-  const overrides: Partial<Record<ModelCapability, string>> = {};
-  // Read from the schema rather than a second list, so a capability added there
-  // gains a variable here without anyone remembering to add one.
-  for (const capability of modelCapabilitySchema.options) {
-    const value = env[`NELL_MODEL_${capability.toUpperCase()}`]?.trim();
-    if (value) overrides[capability] = value;
-  }
-  return overrides;
-}
+export { catalogLookup, overridesFromEnv } from "@nell/agent";
 
-/** Vendors that can draw *and* that this file knows how to call. */
+/** Vendors that draw *and* whose image endpoint this codebase knows how to call. */
 const CAN_DRAW: Readonly<Record<string, ImageVendor>> = {
   openai: "openai",
   google: "google",
 };
-
-/**
- * The one lookup, used by both what runs and what settings says.
- *
- * Written as two, briefly, and it drifted within a minute of running: with
- * `NELL_MODEL_IMAGE=google` the drawer resolved happily to Google and drew,
- * while `/models` reported *"I don't know the model 'google'"* and listed image
- * generation under what Nell cannot do. A settings screen contradicting the
- * running behaviour is worse than no settings screen — the person reads it,
- * believes it, and stops asking for the thing that would have worked.
- *
- * The permissiveness lives here rather than at one call site precisely so it
- * cannot apply to only one of them.
- */
-export function catalogLookup(
-  id: string
-): { readonly provider: string; readonly supportsVision: boolean } | undefined {
-  const known = REFERENCE_CATALOG.find((model) => model.id === id);
-  if (known) return { provider: known.provider, supportsVision: known.supportsVision };
-
-  /**
-   * A model id the catalog has never heard of can still be meaningful.
-   *
-   * The catalog lists *chat* models; `gpt-image-1` is not one and never will
-   * be, and neither is the bare vendor name an admin is most likely to write.
-   * Refusing those would reject exactly the values this setting exists to
-   * accept. The vendor prefix is what carries the meaning, so the vendor is
-   * what gets checked.
-   */
-  const vendor = id.split("/")[0] ?? "";
-  return vendor in CAN_DRAW ? { provider: vendor, supportsVision: false } : undefined;
-}
 
 export interface Drawer {
   readonly vendor: ImageVendor;
@@ -117,7 +61,19 @@ export function drawerFor(
   assignment: Assignment,
   keyFor: (vendor: string) => string | undefined
 ): Drawer | undefined {
-  const resolved = resolveCapabilities(assignment, catalogLookup);
+  /**
+   * The key check lives inside the resolution now, not beside it.
+   *
+   * It used to be a second test here — resolve a model, then separately ask
+   * whether its vendor had a key — which is how the settings screen and the
+   * running behaviour came to disagree. One question, asked once.
+   */
+  const resolved = resolveCapabilities(
+    assignment,
+    catalogLookup,
+    (vendor) => keyFor(vendor) !== undefined
+  );
+
   const modelId = resolved.find((entry) => entry.capability === "image")?.modelId;
   if (!modelId) return undefined;
 

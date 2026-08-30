@@ -28,7 +28,9 @@ export {
   capabilitiesOf,
   CAPABILITY_LABELS,
   describe as describeCapabilities,
+  mergeAssignments,
   modelCapabilitySchema,
+  overridesFromEnv,
   report as capabilityReport,
   resolve as resolveCapabilities,
   VENDOR_CAPABILITIES,
@@ -132,6 +134,7 @@ export {
 
 export {
   buildCatalog,
+  catalogLookup,
   explainProblem,
   optionsForTier,
   providerSchema,

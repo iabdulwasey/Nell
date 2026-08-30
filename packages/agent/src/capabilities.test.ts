@@ -57,9 +57,12 @@ describe("what a model can do", () => {
   });
 });
 
+/** Every vendor paid for, so these cases isolate model choice from key presence. */
+const paid = () => true;
+
 describe("who handles what", () => {
   it("sends everything to one model when that is all there is", () => {
-    const resolved = resolve({ defaultModel: "openai/gpt-5" }, lookup);
+    const resolved = resolve({ defaultModel: "openai/gpt-5" }, lookup, paid);
     expect(resolved.every((entry) => entry.modelId === "openai/gpt-5" || !entry.modelId)).toBe(
       true
     );
@@ -73,7 +76,8 @@ describe("who handles what", () => {
         defaultModel: "anthropic/claude-sonnet-4-5",
         overrides: { image: "openai/gpt-5" },
       },
-      lookup
+      lookup,
+      paid
     );
 
     const image = resolved.find((entry) => entry.capability === "image");
@@ -97,14 +101,15 @@ describe("who handles what", () => {
         defaultModel: "openai/gpt-5",
         overrides: { image: "deepseek/deepseek-v3" },
       },
-      lookup
+      lookup,
+      paid
     );
 
     expect(resolved.find((entry) => entry.capability === "image")?.modelId).toBe("openai/gpt-5");
   });
 
   it("leaves a capability unassigned when nothing can do it", () => {
-    const resolved = resolve({ defaultModel: "deepseek/deepseek-v3" }, lookup);
+    const resolved = resolve({ defaultModel: "deepseek/deepseek-v3" }, lookup, paid);
     const image = resolved.find((entry) => entry.capability === "image");
     expect(image?.modelId).toBeUndefined();
   });
@@ -138,10 +143,74 @@ describe("what the user is told", () => {
     expect(result.wouldFix[0]).toBe("openai");
   });
 
-  it("says nothing is missing when nothing is", () => {
+  /**
+   * The behaviour the whole settings design turns on, stated as a pair.
+   *
+   * Someone who picks a model covering everything should be asked for nothing —
+   * no second key, no per-capability choice, silence. Someone who picks a model
+   * that cannot draw should be told so *while they are choosing*, not when a
+   * task fails. Both fall out of the same computation, which is why they are
+   * asserted together: it is the contrast that is the feature.
+   */
+  it("says nothing to a user whose model covers everything", () => {
     const result = report({ defaultModel: "openai/gpt-5" }, lookup, new Set(["openai"]));
     expect(result.cannot).toHaveLength(0);
-    expect(describeReport(result)).not.toContain("What I can't");
+    expect(result.needsKey).toHaveLength(0);
+
+    const said = describeReport(result);
+    expect(said).not.toContain("What I can't");
+    expect(said).not.toContain("Waiting on a key");
+  });
+
+  /**
+   * A capability needs a model **and** a key, and this is the case that proved
+   * it did not.
+   *
+   * With only an Anthropic key and Google chosen as the default, the report
+   * claimed image generation, audio and embeddings — every one of them needing
+   * a Google key that did not exist. The key set was consulted only to rank
+   * suggestions, never to decide availability, so a settings screen built on it
+   * would have been confidently wrong about exactly the thing the person was
+   * about to rely on.
+   */
+  it("does not claim what an unpaid vendor would do", () => {
+    const result = report({ defaultModel: "google/gemini-3-pro" }, lookup, new Set(["anthropic"]));
+
+    expect(result.can).not.toContain("image");
+    expect(result.can).not.toContain("text");
+    expect(result.needsKey.map((entry) => entry.capability)).toContain("image");
+    expect(result.needsKey.every((entry) => entry.vendor === "google")).toBe(true);
+  });
+
+  /**
+   * Two gaps that read the same and are fixed differently.
+   *
+   * *Nothing can do this* means choose a model. *A model is chosen and unpaid*
+   * means paste a key. Telling somebody to pick an image model when they have
+   * already picked one is a note that reads as the software being broken.
+   */
+  it("distinguishes 'choose a model' from 'add a key'", () => {
+    const result = report(
+      { defaultModel: "anthropic/claude-sonnet-4-5", overrides: { image: "openai/gpt-5" } },
+      lookup,
+      new Set(["anthropic"])
+    );
+
+    // Chosen, and unpaid: a key closes it.
+    expect(result.needsKey).toEqual([{ capability: "image", vendor: "openai" }]);
+    expect(result.cannot).not.toContain("image");
+
+    const said = describeReport(result);
+    expect(said).toContain("Waiting on a key");
+    expect(said).toContain("add your OpenAI key");
+  });
+
+  /** One key, asked for once, however many capabilities are waiting on it. */
+  it("groups several waiting capabilities under the single key that unlocks them", () => {
+    const said = describeReport(
+      report({ defaultModel: "google/gemini-3-pro" }, lookup, new Set(["anthropic"]))
+    );
+    expect(said.match(/add your Google key/gu)).toHaveLength(1);
   });
 
   /**

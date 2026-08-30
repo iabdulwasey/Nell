@@ -23,6 +23,13 @@
  * while doing it.
  */
 
+import {
+  capabilityReport,
+  catalogLookup,
+  overridesFromEnv,
+  type Assignment,
+  type CapabilityReport,
+} from "@nell/agent";
 import { appendEntry, verifyChain, type AuditEntry } from "@nell/audit";
 import type { PurchasePayload } from "@nell/aegis";
 import { createPool, withWorkspace } from "@nell/db";
@@ -340,6 +347,38 @@ export function storedKeys(): readonly StoredKey[] {
 export function selectedModels(): Readonly<Record<"nano" | "worker" | "frontier", string>> {
   const chosen = process.env["NELL_MODEL"] ?? "anthropic/claude-sonnet-4-5";
   return { nano: chosen, worker: chosen, frontier: chosen };
+}
+
+/**
+ * The default model, and who was assigned each job on top of it.
+ *
+ * Read from the same variables the agent reads, so the page and the process
+ * cannot disagree about what is configured. That mattered within a minute of
+ * this existing: with two lookups instead of one, `/models` reported that Nell
+ * could not draw while it was drawing perfectly well.
+ */
+export function modelAssignment(): Assignment {
+  return {
+    defaultModel: process.env["NELL_MODEL"] ?? "anthropic/claude-sonnet-4-5",
+    overrides: overridesFromEnv(process.env as Record<string, string | undefined>),
+  };
+}
+
+/**
+ * What this install can actually do — the answer the settings page is for.
+ *
+ * Derived, never stored. A capability is available only when a model is
+ * assigned to it *and* that vendor has a key, which is the property the report
+ * did not have: with only an Anthropic key and Google as the default it claimed
+ * image generation, audio and embeddings, every one of them needing a Google
+ * key that did not exist.
+ */
+export function capabilities(): CapabilityReport {
+  return capabilityReport(
+    modelAssignment(),
+    catalogLookup,
+    new Set(storedKeys().map((key) => key.provider))
+  );
 }
 
 export function ago(at: number, reference: number = Date.now()): string {

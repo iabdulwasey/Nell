@@ -92,10 +92,29 @@ export const VENDOR_NAMES: Readonly<Record<string, string>> = {
 };
 
 export const VENDOR_CAPABILITIES: Readonly<Record<string, readonly ModelCapability[]>> = {
+  // Server-side `web_search`, `web_fetch` and `code_execution`; no image
+  // endpoint of any kind, which is why a Claude-default install is the case the
+  // settings screen has to handle well.
   anthropic: ["text", "vision", "search", "code"],
+  // The only vendor that covers everything: Responses-API search, the Code
+  // Interpreter container, `gpt-image-*`, Realtime audio, and embeddings.
   openai: ["text", "vision", "search", "code", "image", "audio", "embed"],
+  // Grounding with Google Search, Gemini Image (Imagen was retired in favour of
+  // it in August 2026), TTS and the Live API, `gemini-embedding-2`. No sandbox
+  // that returns files, so no `code`.
   google: ["text", "vision", "search", "image", "audio", "embed"],
+  // Live search over X, and Grok Imagine for pictures.
   xai: ["text", "vision", "search", "image"],
+  /**
+   * Text only, and the vendor this design exists for.
+   *
+   * No sandbox and no search, so "one model does the whole job" barely exists
+   * here — which is exactly the install that must be told what it is missing
+   * rather than left to discover it. Vision arrived in a 2026 experimental
+   * model and is not claimed for the vendor: it comes from the catalog entry's
+   * own `supportsVision`, which is where a capability that varies *within* a
+   * vendor belongs.
+   */
   deepseek: ["text"],
   zhipu: ["text", "vision"],
   moonshot: ["text", "vision"],
@@ -148,11 +167,56 @@ export interface ResolvedCapability {
   readonly modelId?: string;
   /** True when it is handled by a model other than the default. */
   readonly delegated: boolean;
+  /**
+   * A model was chosen and its vendor has no key, so this will not work.
+   *
+   * Kept apart from "nothing can do it" because the two are fixed differently
+   * and by different people: one is *choose a model*, the other is *paste a
+   * key*. Telling somebody to pick a model for drawing when they have already
+   * picked one and merely never added the key is a note that reads as broken.
+   */
+  readonly needsKeyFrom?: string;
 }
 
 export interface Lookup {
   /** Returns undefined for a model this install does not know about. */
-  (modelId: string): { readonly provider: string; readonly supportsVision: boolean } | undefined;
+  (modelId: string):
+    | {
+        readonly provider: string;
+        readonly supportsVision: boolean;
+        readonly capabilities?: readonly ModelCapability[];
+      }
+    | undefined;
+}
+
+/**
+ * `NELL_MODEL_IMAGE=openai/gpt-image-2` and one variable per capability.
+ *
+ * Named after the capability so that adding one does not mean inventing a
+ * naming scheme for it, and read from the schema rather than a second list so
+ * a capability added there gains a variable here with nobody remembering to.
+ */
+export function overridesFromEnv(
+  env: Record<string, string | undefined>
+): Readonly<Partial<Record<ModelCapability, string>>> {
+  const overrides: Partial<Record<ModelCapability, string>> = {};
+  for (const capability of modelCapabilitySchema.options) {
+    const value = env[`NELL_MODEL_${capability.toUpperCase()}`]?.trim();
+    if (value) overrides[capability] = value;
+  }
+  return overrides;
+}
+
+/**
+ * Whether this install can pay for that vendor.
+ *
+ * A function rather than a set because the answer is layered in a hosted
+ * deployment — the operator's key serves everyone, a workspace may bring its
+ * own, and the more specific one wins. Asking a question keeps that resolution
+ * in the one place that knows about workspaces.
+ */
+export interface HasKey {
+  (vendor: string): boolean;
 }
 
 /**
@@ -162,24 +226,80 @@ export interface Lookup {
  * who assigns image generation to a model that cannot draw has made a mistake,
  * and silently obeying it produces a failure at the moment of use rather than a
  * correction at the moment of choosing.
+ *
+ * **A capability needs a model *and* a key, and `hasKey` is required for that
+ * reason.** It was optional, and defaulted to assuming every key was present:
+ * an install holding only an Anthropic key, with Google chosen as its default
+ * model, reported that it could generate images, hear speech and embed. Every
+ * one of those needed a Google key that did not exist. A settings screen wrong
+ * in that direction is worse than none, because it is wrong precisely about the
+ * thing the person is about to rely on. Making the parameter optional again
+ * would restore the lie for whichever caller forgot it, so it is not optional.
  */
-export function resolve(assignment: Assignment, lookup: Lookup): readonly ResolvedCapability[] {
+export function resolve(
+  assignment: Assignment,
+  lookup: Lookup,
+  hasKey: HasKey
+): readonly ResolvedCapability[] {
   const primary = lookup(assignment.defaultModel);
   const primaryCan = primary ? capabilitiesOf(primary) : new Set<ModelCapability>();
+
+  /** A chosen model, subject to whether its vendor is paid for. */
+  const chosen = (
+    capability: ModelCapability,
+    modelId: string,
+    delegated: boolean
+  ): ResolvedCapability => {
+    const vendor = lookup(modelId)?.provider ?? modelId.split("/")[0] ?? "";
+    return hasKey(vendor)
+      ? { capability, modelId, delegated }
+      : { capability, delegated, needsKeyFrom: vendor };
+  };
 
   return modelCapabilitySchema.options.map((capability) => {
     const override = assignment.overrides?.[capability];
     if (override) {
       const model = lookup(override);
       if (model && capabilitiesOf(model).has(capability)) {
-        return { capability, modelId: override, delegated: override !== assignment.defaultModel };
+        return chosen(capability, override, override !== assignment.defaultModel);
       }
     }
 
     return primaryCan.has(capability)
-      ? { capability, modelId: assignment.defaultModel, delegated: false }
+      ? chosen(capability, assignment.defaultModel, false)
       : { capability, delegated: false };
   });
+}
+
+/**
+ * The operator's choice, and the user's on top of it.
+ *
+ * Precedence is defined once, here, because it is the whole difference between
+ * a self-hosted install and a commercial one and it must not be re-derived at
+ * each call site. Self-host has an operator layer and usually no workspace
+ * layer, so this returns the operator's answer unchanged; hosted has an admin
+ * serving hundreds of tenants, any of whom may have been permitted to choose
+ * differently.
+ *
+ * **Most specific wins, per capability rather than per object.** A workspace
+ * that overrides only drawing keeps the operator's choice for everything else —
+ * replacing the whole override map would silently discard settings the admin
+ * made, which is the failure mode of merging at the wrong depth.
+ *
+ * Whether a workspace is *allowed* to choose is not decided here. That is
+ * policy, it differs by edition and by what the operator sells, and a merge
+ * function is the wrong place to enforce it: the caller passes `undefined` when
+ * user choice is not permitted, which is a rule that cannot be forgotten
+ * halfway down.
+ */
+export function mergeAssignments(
+  operator: Assignment,
+  workspace?: Partial<Assignment>
+): Assignment {
+  return {
+    defaultModel: workspace?.defaultModel ?? operator.defaultModel,
+    overrides: { ...operator.overrides, ...workspace?.overrides },
+  };
 }
 
 /**
@@ -192,7 +312,16 @@ export function resolve(assignment: Assignment, lookup: Lookup): readonly Resolv
  */
 export interface CapabilityReport {
   readonly can: readonly ModelCapability[];
+  /** Nothing available can do it. Fixed by choosing a model. */
   readonly cannot: readonly ModelCapability[];
+  /**
+   * A model is chosen and its vendor is unpaid. Fixed by pasting a key.
+   *
+   * The distinction is the difference between a useful note and a confusing
+   * one: *"pick a model for image generation"* said to somebody who has already
+   * picked one reads as the software being broken.
+   */
+  readonly needsKey: readonly { readonly capability: ModelCapability; readonly vendor: string }[];
   readonly delegated: readonly ResolvedCapability[];
   /**
    * Overrides that were set and could not be honoured.
@@ -217,8 +346,22 @@ export function report(
   lookup: Lookup,
   available: ReadonlySet<string> = new Set()
 ): CapabilityReport {
-  const resolved = resolve(assignment, lookup);
-  const missing = resolved.filter((entry) => !entry.modelId).map((entry) => entry.capability);
+  const resolved = resolve(assignment, lookup, (vendor) => available.has(vendor));
+
+  /**
+   * Two kinds of gap, kept apart all the way to the screen.
+   *
+   * *Nothing can do it* is fixed by choosing a model. *A model is chosen and
+   * unpaid* is fixed by pasting a key. Collapsing them produces the note that
+   * tells somebody to pick an image model when they already have.
+   */
+  const needsKey = resolved
+    .filter((entry) => entry.needsKeyFrom !== undefined)
+    .map((entry) => ({ capability: entry.capability, vendor: entry.needsKeyFrom! }));
+
+  const missing = resolved
+    .filter((entry) => !entry.modelId && entry.needsKeyFrom === undefined)
+    .map((entry) => entry.capability);
 
   const ignored: {
     capability: ModelCapability;
@@ -261,7 +404,8 @@ export function report(
   return {
     can: resolved.filter((entry) => entry.modelId).map((entry) => entry.capability),
     cannot: missing,
-    delegated: resolved.filter((entry) => entry.delegated),
+    needsKey,
+    delegated: resolved.filter((entry) => entry.delegated && entry.modelId),
     ignored,
     wouldFix,
   };
@@ -302,6 +446,26 @@ export function describe(result: CapabilityReport): string {
           : `• ${CAPABILITY_LABELS[entry.capability]} — ${entry.modelId} can't do that`
       )
     );
+  }
+
+  /**
+   * The nearly-there section, and the one the user asked for by name.
+   *
+   * Before the flat "what I can't", because it is the shorter path: the choice
+   * is already made and one key finishes it. Grouped by vendor so somebody with
+   * three capabilities waiting on one key is asked for one key.
+   */
+  if (result.needsKey.length > 0) {
+    const byVendor = new Map<string, ModelCapability[]>();
+    for (const entry of result.needsKey) {
+      byVendor.set(entry.vendor, [...(byVendor.get(entry.vendor) ?? []), entry.capability]);
+    }
+
+    lines.push("", "Waiting on a key:");
+    for (const [vendor, capabilities] of byVendor) {
+      const what = capabilities.map((capability) => CAPABILITY_LABELS[capability]).join(", ");
+      lines.push(`• ${what} — add your ${VENDOR_NAMES[vendor] ?? vendor} key`);
+    }
   }
 
   if (result.cannot.length > 0) {

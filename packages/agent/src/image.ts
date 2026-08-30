@@ -44,7 +44,9 @@ export type ImageVendor = "google" | "openai";
  */
 export const DEFAULT_IMAGE_MODEL: Readonly<Record<ImageVendor, string>> = {
   google: "gemini-3-pro-image",
-  openai: "gpt-image-1",
+  // `gpt-image-1` still answers, but 2 is current — and `dall-e-2`/`dall-e-3`
+  // were removed from the API in May 2026, which is this comment's point.
+  openai: "gpt-image-2",
 };
 
 export interface ImageToolOptions {

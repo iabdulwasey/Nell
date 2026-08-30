@@ -13,6 +13,7 @@
  */
 
 import { z } from "zod";
+import { VENDOR_CAPABILITIES, type Lookup } from "./capabilities.js";
 import type { ModelCatalog, ModelSpec, ModelTier } from "./model-router.js";
 
 export const providerSchema = z.enum([
@@ -239,6 +240,41 @@ export function optionsForTier(
   tier: ModelTier
 ): readonly CatalogEntry[] {
   return entries.filter((entry) => entry.suitableFor.includes(tier));
+}
+
+/**
+ * The one lookup — used by what runs and by what settings says.
+ *
+ * There were briefly two, and they drifted within a minute: the picture tool's
+ * accepted a bare vendor name and the settings screen's did not, so an install
+ * with `NELL_MODEL_IMAGE=google` **drew perfectly well** while `/models`
+ * reported *"I don't know the model 'google'"* and listed image generation
+ * under what Nell could not do. A settings screen contradicting the running
+ * behaviour is worse than none: the person reads it, believes it, and stops
+ * asking for the thing that would have worked.
+ *
+ * The permissiveness lives here, once, so it cannot apply to only one of them.
+ */
+export function catalogLookup(modelId: string): ReturnType<Lookup> {
+  const known = REFERENCE_CATALOG.find((model) => model.id === modelId);
+  if (known) return { provider: known.provider, supportsVision: known.supportsVision };
+
+  /**
+   * A model id the catalog has never heard of can still be meaningful.
+   *
+   * The catalog lists *chat* models. `gpt-image-2` is not one and never will
+   * be, and neither is the bare vendor name an admin is most likely to type.
+   * Refusing those would reject exactly the values the setting exists to
+   * accept, so the vendor prefix is what gets checked.
+   *
+   * Its capabilities are handed over whole rather than derived, because for a
+   * bare vendor we do not know *which* model and therefore cannot answer for
+   * vision. Passing `supportsVision: false` would have the vendor's own list
+   * silently stripped of it, and reported "Google can't read a photo".
+   */
+  const vendor = modelId.split("/")[0] ?? "";
+  const capabilities = VENDOR_CAPABILITIES[vendor];
+  return capabilities ? { provider: vendor, supportsVision: true, capabilities } : undefined;
 }
 
 export function explainProblem(problem: CatalogProblem): string {
