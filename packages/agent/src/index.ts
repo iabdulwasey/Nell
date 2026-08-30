@@ -34,6 +34,7 @@ export {
 export {
   capabilitiesOf,
   CAPABILITY_LABELS,
+  CONSUMED_CAPABILITIES,
   describe as describeCapabilities,
   mergeAssignments,
   modelCapabilitySchema,

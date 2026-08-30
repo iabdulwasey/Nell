@@ -30,6 +30,13 @@
  */
 
 import { z } from "zod";
+import {
+  baseUrlFor,
+  explainNoFiles,
+  foldOpenAiStream,
+  toOpenAiMessages,
+  toOpenAiTools,
+} from "./assist-openai.js";
 import { stampToday } from "./provider.js";
 
 /**
@@ -77,6 +84,15 @@ export interface ClientTool {
 
 export interface AssistRequest {
   readonly apiKey: string;
+  /**
+   * `vendor/model`, or a bare model name meaning Anthropic.
+   *
+   * The vendor half is what decides which wire format is spoken, so it has to
+   * survive down to here — it used to be stripped by the caller, which is
+   * exactly how this path came to be hardcoded to one vendor while the settings
+   * screen described another. A bare name is still accepted so nothing that
+   * passed `claude-sonnet-4-5` breaks.
+   */
   readonly model: string;
   readonly system: string;
   readonly prompt: string;
@@ -102,6 +118,29 @@ export interface AssistRequest {
    * asking anybody, and it beats `nell-1.pdf` by a distance.
    */
   readonly nameHint?: string;
+  /** Base URL for an OpenAI-compatible endpoint on the operator's own hardware. */
+  readonly baseUrl?: string;
+}
+
+/**
+ * Which wire format this model speaks, and what it can do inside one request.
+ *
+ * Anthropic is its own shape and carries server-side search and a code sandbox
+ * that returns files. Everything else here speaks chat completions with function
+ * calling, which has neither — search is supplied as a client tool instead, and
+ * running code is genuinely unavailable rather than quietly degraded.
+ */
+export function assistDialect(model: string): {
+  readonly vendor: string;
+  readonly model: string;
+  readonly anthropic: boolean;
+} {
+  const slash = model.indexOf("/");
+  // A bare name means Anthropic, which is what every existing caller passed.
+  if (slash === -1) return { vendor: "anthropic", model, anthropic: true };
+
+  const vendor = model.slice(0, slash);
+  return { vendor, model: model.slice(slash + 1), anthropic: vendor === "anthropic" };
 }
 
 export type AssistOutcome =
@@ -231,42 +270,60 @@ async function streamOnce(
     }, idleMs);
   };
 
+  const dialect = assistDialect(request.model);
+
   let response: Response;
   try {
-    response = await fetchImpl("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "x-api-key": request.apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": BETAS,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: request.model,
-        /**
-         * Generous, because the model writes the document *as code*.
-         *
-         * 8192 was fine for an answer and nowhere near a designed PDF: the whole
-         * text of the document is embedded in the Python that produces it, so a
-         * few pages of prose is a few thousand tokens of source before anything
-         * has run. It hit the ceiling mid-line, and the task came back looking
-         * successful.
-         */
-        max_tokens: request.maxTokens ?? 32_000,
-        /**
-         * Stamped here rather than by the caller, for the same reason the
-         * providers stamp theirs: `assist` talks to Anthropic directly and
-         * never passes through `ModelProvider`, so it is its own transport and
-         * has to carry its own guarantee. A model that does not know the year
-         * searches for last year's answer and reports it confidently.
-         */
-        system: stampToday(request.system, new Date()),
-        ...(tools.length > 0 ? { tools } : {}),
-        messages,
-        stream: true,
-      }),
-    });
+    response = dialect.anthropic
+      ? await fetchImpl("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "x-api-key": request.apiKey,
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": BETAS,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: dialect.model,
+            /**
+             * Generous, because the model writes the document *as code*.
+             *
+             * 8192 was fine for an answer and nowhere near a designed PDF: the whole
+             * text of the document is embedded in the Python that produces it, so a
+             * few pages of prose is a few thousand tokens of source before anything
+             * has run. It hit the ceiling mid-line, and the task came back looking
+             * successful.
+             */
+            max_tokens: request.maxTokens ?? 32_000,
+            /**
+             * Stamped here rather than by the caller, for the same reason the
+             * providers stamp theirs: `assist` is its own transport and never
+             * passes through `ModelProvider`, so it has to carry its own
+             * guarantee. A model that does not know the year searches for last
+             * year's answer and reports it confidently.
+             */
+            system: stampToday(request.system, new Date()),
+            ...(tools.length > 0 ? { tools } : {}),
+            messages,
+            stream: true,
+          }),
+        })
+      : await fetchImpl(`${request.baseUrl ?? baseUrlFor(dialect.vendor) ?? ""}/chat/completions`, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            authorization: `Bearer ${request.apiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: dialect.model,
+            max_tokens: request.maxTokens ?? 32_000,
+            messages: toOpenAiMessages(stampToday(request.system, new Date()), messages),
+            ...(request.tools?.length ? { tools: toOpenAiTools(request.tools) } : {}),
+            stream: true,
+          }),
+        });
   } catch (error) {
     clearTimeout(idle);
     return {
@@ -311,6 +368,39 @@ async function streamOnce(
       // 4xx other than rate limiting will fail identically on a retry.
       retryable: status === 429 || status >= 500,
     };
+  }
+
+  /**
+   * Chat completions is a different stream and folds separately.
+   *
+   * Kept as its own branch rather than woven into the switch below, because the
+   * two formats share only the transport: one sends whole blocks with deltas
+   * against them, the other sends fragments against choice indices. Interleaving
+   * them would produce a state machine nobody could read.
+   */
+  if (!dialect.anthropic) {
+    const events: Record<string, unknown>[] = [];
+    try {
+      for await (const event of sse(response.body)) {
+        alive();
+        events.push(event);
+      }
+    } catch (error) {
+      clearTimeout(idle);
+      return {
+        ok: false,
+        reason: controller.signal.aborted
+          ? "nothing happened for five minutes, so I stopped"
+          : error instanceof Error
+            ? error.message
+            : "the stream broke",
+        retryable: true,
+      };
+    }
+
+    clearTimeout(idle);
+    const folded = foldOpenAiStream(events, request.onStep);
+    return { ok: true, content: folded.content, stopReason: folded.stopReason };
   }
 
   const blocks: Record<string, unknown>[] = [];
@@ -433,15 +523,38 @@ async function* sse(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<str
 export async function assist(request: AssistRequest): Promise<AssistOutcome> {
   const fetchImpl = request.fetchImpl ?? fetch;
 
+  const dialect = assistDialect(request.model);
+
+  if (!dialect.anthropic && !request.baseUrl && !baseUrlFor(dialect.vendor)) {
+    return {
+      ok: false,
+      reason: `I do not know how to talk to ${dialect.vendor}.`,
+      retryable: false,
+    };
+  }
+
+  /**
+   * Server-side tools, only where they exist.
+   *
+   * These are Anthropic's, declared in its own vocabulary, and offering them to
+   * an endpoint that speaks chat completions would be sending a tool definition
+   * it will reject. On that path the same jobs are done differently: searching
+   * arrives as a client tool, and running code is simply unavailable — stated
+   * rather than degraded, because a half-working capability is worse than an
+   * absent one when only the absent one is visible.
+   */
   const tools: Record<string, unknown>[] = [];
-  if (request.search) tools.push({ type: "web_search_20250305", name: "web_search", max_uses: 5 });
-  if (request.code) tools.push({ type: "code_execution_20250522", name: "code_execution" });
-  for (const tool of request.tools ?? []) {
-    tools.push({
-      name: tool.name,
-      description: tool.description,
-      input_schema: tool.inputSchema,
-    });
+  if (dialect.anthropic) {
+    if (request.search)
+      tools.push({ type: "web_search_20250305", name: "web_search", max_uses: 5 });
+    if (request.code) tools.push({ type: "code_execution_20250522", name: "code_execution" });
+    for (const tool of request.tools ?? []) {
+      tools.push({
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.inputSchema,
+      });
+    }
   }
 
   /**
@@ -449,12 +562,19 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
    *
    * An upload that fails is skipped rather than fatal — the model can still
    * answer from the prompt, and losing one attachment beats losing the task.
+   * Off the Anthropic path there is no container to upload into at all, so the
+   * model is *told* that files were attached and could not be opened, rather
+   * than being left to answer confidently about a document it never saw.
    */
   const uploaded: string[] = [];
-  for (const file of request.files ?? []) {
-    const id = await upload(request, file);
-    if (id) uploaded.push(id);
+  if (dialect.anthropic) {
+    for (const file of request.files ?? []) {
+      const id = await upload(request, file);
+      if (id) uploaded.push(id);
+    }
   }
+
+  const unopened = dialect.anthropic ? undefined : explainNoFiles(request.files ?? []);
 
   const said: string[] = [];
   const preamble: string[] = [];
@@ -472,7 +592,7 @@ export async function assist(request: AssistRequest): Promise<AssistOutcome> {
       role: "user",
       content: [
         ...uploaded.map((id) => ({ type: "container_upload", file_id: id })),
-        { type: "text", text: request.prompt },
+        { type: "text", text: unopened ? `${request.prompt}\n\n${unopened}` : request.prompt },
       ],
     },
   ];

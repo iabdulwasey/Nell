@@ -58,6 +58,8 @@ export interface PipelineDeps {
    */
   readonly assistKey?: string;
   readonly assistModel?: string;
+  /** For an OpenAI-compatible endpoint on the operator's own hardware. */
+  readonly assistBaseUrl?: string;
   /**
    * Specialists the model may call — image generation today, more later.
    *
@@ -158,7 +160,8 @@ export async function runPipeline(
         const outcome = await durably(`assist:${String(index)}`, () =>
           assist({
             apiKey: deps.assistKey ?? "",
-            model: deps.assistModel ?? "claude-sonnet-4-5",
+            model: deps.assistModel ?? "anthropic/claude-sonnet-4-5",
+            ...(deps.assistBaseUrl ? { baseUrl: deps.assistBaseUrl } : {}),
             system: [
               "Do the job properly and completely. Search the web when the answer depends on",
               "something current. Write and run code when a file has to be produced or data",

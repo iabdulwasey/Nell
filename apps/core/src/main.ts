@@ -279,21 +279,46 @@ const drawer = drawerFor(assignment, (vendor) =>
  * running model-authored code in one we own is a security decision the
  * architecture defers deliberately.
  */
-const assist = ((): { apiKey: string; model: string } | undefined => {
-  if (!anthropicKey) return undefined;
+const assist = ((): { apiKey: string; model: string; baseUrl?: string } | undefined => {
+  const vendor = assignment.defaultModel.split("/")[0] ?? "";
+  const keys = keysFromEnv(process.env);
 
-  const [vendor, ...rest] = assignment.defaultModel.split("/");
-  const named = rest.join("/");
-  if (vendor !== "anthropic" || !named) {
+  const key =
+    vendor === "anthropic"
+      ? anthropicKey
+      : vendor === "openai"
+        ? keys.openai
+        : vendor === "deepseek"
+          ? keys.deepseek
+          : vendor === "moonshot"
+            ? keys.moonshot
+            : vendor === "zhipu"
+              ? keys.zhipu
+              : vendor === "openrouter"
+                ? keys.openrouter
+                : vendor === "self-hosted"
+                  ? // Local endpoints usually ignore the key; a placeholder is
+                    // simpler than making the header conditional.
+                    (keys.selfHostedBaseUrl && "not-required") || undefined
+                  : undefined;
+
+  if (!key) {
     console.log(
-      `note: ${assignment.defaultModel} cannot answer questions, read documents, search or run ` +
-        `code — that path speaks Anthropic only. Those jobs are unavailable until the default ` +
-        `model is an Anthropic one.`
+      `note: no key for ${vendor}, so ${assignment.defaultModel} cannot answer questions, read ` +
+        `documents or search. Add that vendor's key.`
     );
     return undefined;
   }
 
-  return { apiKey: anthropicKey, model: named };
+  return {
+    apiKey: key,
+    // The full id, vendor half included: stripping it here is precisely how this
+    // path came to speak one vendor while settings described another.
+    model: assignment.defaultModel,
+    ...(vendor === "self-hosted" && keys.selfHostedBaseUrl
+      ? { baseUrl: keys.selfHostedBaseUrl }
+      : {}),
+  };
 })();
 
 const specialists = [
@@ -476,7 +501,13 @@ await run(
      * per-capability choice an admin had made.
      */
     ...(Object.keys(assignment.overrides).length > 0 ? { assignment: assignment.overrides } : {}),
-    ...(assist ? { assistKey: assist.apiKey, assistModel: assist.model } : {}),
+    ...(assist
+      ? {
+          assistKey: assist.apiKey,
+          assistModel: assist.model,
+          ...(assist.baseUrl ? { assistBaseUrl: assist.baseUrl } : {}),
+        }
+      : {}),
     ...(specialists.length > 0 ? { tools: specialists } : {}),
     ...(vault && form && vaultKeys
       ? {

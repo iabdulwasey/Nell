@@ -121,6 +121,8 @@ export interface NellOptions {
   /** Key and model for the assist step, when this install has one. */
   readonly assistKey?: string;
   readonly assistModel?: string;
+  /** For an OpenAI-compatible endpoint on the operator's own hardware. */
+  readonly assistBaseUrl?: string;
   /** Specialists the model may call — a vendor that draws, for instance. */
   readonly tools?: readonly ClientTool[];
   /**
@@ -782,6 +784,7 @@ async function executeTask(options: NellOptions, run: TaskRun): Promise<LoopOutc
         ...(options.search ? { search: options.search } : {}),
         ...(options.assistKey ? { assistKey: options.assistKey } : {}),
         ...(options.assistModel ? { assistModel: options.assistModel } : {}),
+        ...(options.assistBaseUrl ? { assistBaseUrl: options.assistBaseUrl } : {}),
         ...(options.tools?.length ? { tools: options.tools } : {}),
         ...(options.vault ? { credentials: options.vault.offers } : {}),
         // Browse steps take the workspace's one browser exclusively; assist

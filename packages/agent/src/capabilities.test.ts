@@ -35,11 +35,19 @@ describe("what a model can do", () => {
     expect(can.has("image")).toBe(false);
   });
 
-  it("knows GPT covers nearly everything", () => {
+  /**
+   * The table records what Nell can *deliver* through a vendor, not what the
+   * vendor markets. OpenAI's Code Interpreter is real and unreachable from here
+   * — it lives behind the Responses API, and the assist path speaks chat
+   * completions — so claiming `code` would put a yes on a row that fails when
+   * somebody relies on it.
+   */
+  it("knows GPT draws and searches, and that its sandbox is out of reach", () => {
     const can = capabilitiesOf(MODELS["openai/gpt-5"]!);
-    for (const capability of ["text", "vision", "search", "code", "image"] as const) {
+    for (const capability of ["text", "vision", "search", "image"] as const) {
       expect(can.has(capability), capability).toBe(true);
     }
+    expect(can.has("code")).toBe(false);
   });
 
   /**
@@ -140,7 +148,9 @@ describe("what the user is told", () => {
    */
   it("suggests the vendor that closes most of the gap first", () => {
     const result = report({ defaultModel: "deepseek/deepseek-v3" }, lookup, new Set(["deepseek"]));
-    expect(result.wouldFix[0]).toBe("openai");
+    // DeepSeek reaches text and search; what is missing is vision, code and
+    // image, and Anthropic is the only vendor here that closes `code`.
+    expect(result.wouldFix[0]).toBe("anthropic");
   });
 
   /**
@@ -152,14 +162,40 @@ describe("what the user is told", () => {
    * task fails. Both fall out of the same computation, which is why they are
    * asserted together: it is the contrast that is the feature.
    */
-  it("says nothing to a user whose model covers everything", () => {
-    const result = report({ defaultModel: "openai/gpt-5" }, lookup, new Set(["openai"]));
+  it("says nothing to a user whose install covers everything", () => {
+    /**
+     * **No single vendor is complete any more, and that is the true state
+     * rather than a regression.** OpenAI cannot make files here — its sandbox
+     * is behind an API this path does not speak — and Anthropic cannot draw.
+     * So a complete install is a *combination*, which is precisely the
+     * arrangement per-capability assignment exists for: Claude to reason and
+     * write, GPT to draw.
+     */
+    const result = report(
+      { defaultModel: "anthropic/claude-sonnet-4-5", overrides: { image: "openai/gpt-5" } },
+      lookup,
+      new Set(["anthropic", "openai"])
+    );
+
     expect(result.cannot).toHaveLength(0);
     expect(result.needsKey).toHaveLength(0);
 
     const said = describeReport(result);
     expect(said).not.toContain("What I can't");
     expect(said).not.toContain("Waiting on a key");
+  });
+
+  /**
+   * `audio` and `embed` are in the schema and nothing in Nell asks for either.
+   * Counting them as gaps would put two permanent "can't" rows on every screen
+   * that no key could ever close — our limitation, dressed as the user's.
+   */
+  it("does not report a gap nothing could close", () => {
+    const result = report({ defaultModel: "openai/gpt-5" }, lookup, new Set(["openai"]));
+    expect(result.cannot).not.toContain("audio");
+    expect(result.cannot).not.toContain("embed");
+    // The one real gap for this vendor is still named.
+    expect(result.cannot).toContain("code");
   });
 
   /**

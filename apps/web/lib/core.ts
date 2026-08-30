@@ -399,10 +399,14 @@ export function capabilities(): CapabilityReport {
  * something untrue by software whose entire pitch is that it tells the truth.
  */
 export const CAPABILITY_ROUTING: Readonly<Record<ModelCapability, string | undefined>> = {
-  text: "Runs on the default model, which must be an Anthropic one today.",
-  vision: "Runs on the default model, which must be an Anthropic one today.",
-  search: "Runs on the default model's own web search — not separately selectable yet.",
-  code: "Runs in the default model's own sandbox — not separately selectable yet.",
+  text: "Always runs on the default model — that is what choosing one means.",
+  vision: "Always runs on the default model.",
+  search:
+    "Runs on the default model, whichever vendor it is: searching is a tool Nell provides, " +
+    "not something borrowed from the model's vendor.",
+  code:
+    "Needs a vendor sandbox, which only Anthropic's models reach today. Nell will say it " +
+    "cannot rather than describing a file it never made.",
   image: undefined,
   audio: "Nothing in Nell uses speech yet.",
   embed: "Recall works without embeddings today; nothing uses this yet.",

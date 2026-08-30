@@ -48,6 +48,26 @@ export const modelCapabilitySchema = z.enum([
 export type ModelCapability = z.infer<typeof modelCapabilitySchema>;
 
 /**
+ * The capabilities Nell actually consumes today.
+ *
+ * `audio` and `embed` are in the schema because the architecture names them and
+ * a model either has them or does not — but nothing in the product asks for
+ * either, so reporting them as gaps would put two permanent *can't* rows on
+ * every settings screen that no key could ever close. A limitation of ours,
+ * dressed as a limitation of the user's choice.
+ *
+ * They are still *shown*, with the reason. What they are not is counted as
+ * something missing.
+ */
+export const CONSUMED_CAPABILITIES: readonly ModelCapability[] = [
+  "text",
+  "vision",
+  "search",
+  "code",
+  "image",
+];
+
+/**
  * What each is for, in the words a settings screen should use.
  *
  * Written as what the user gets, not what the API is called: nobody picks a
@@ -91,38 +111,57 @@ export const VENDOR_NAMES: Readonly<Record<string, string>> = {
   "self-hosted": "your own hardware",
 };
 
+/**
+ * **What Nell can deliver through each vendor** — not what the vendor markets.
+ *
+ * The distinction is the difference between a settings screen and a brochure,
+ * and getting it wrong reintroduces the exact drift this file exists to remove.
+ * OpenAI's Code Interpreter is real and Nell cannot reach it: that container
+ * lives behind the Responses API and the assist path speaks chat completions, so
+ * claiming `code` for OpenAI would put a *yes* on a row that fails when
+ * somebody relies on it. Likewise Realtime audio and embeddings are real and
+ * nothing in Nell consumes either, so promising them would be describing a
+ * roadmap as a feature.
+ *
+ * The happy consequence of search becoming a client tool: **every vendor that
+ * can call a function can search**, because searching is Nell's HTTP call to a
+ * search vendor rather than something borrowed from whoever hosts the model.
+ *
+ * This table will go out of date, and that is not a flaw to design around: it is
+ * one edit to correct, and being explicit is the only way the screen can be
+ * honest. A capability moves here when Nell can *route* it, never when a vendor
+ * announces it.
+ */
 export const VENDOR_CAPABILITIES: Readonly<Record<string, readonly ModelCapability[]>> = {
-  // Server-side `web_search`, `web_fetch` and `code_execution`; no image
-  // endpoint of any kind, which is why a Claude-default install is the case the
-  // settings screen has to handle well.
+  /**
+   * The only vendor whose sandbox Nell reaches, which is why `code` is here and
+   * nowhere else. Server-side `web_search` and `code_execution` both resolve
+   * inside one request; no image endpoint of any kind, which is why a
+   * Claude-default install is the case the settings screen must handle well.
+   */
   anthropic: ["text", "vision", "search", "code"],
-  // The only vendor that covers everything: Responses-API search, the Code
-  // Interpreter container, `gpt-image-*`, Realtime audio, and embeddings.
-  openai: ["text", "vision", "search", "code", "image", "audio", "embed"],
-  // Grounding with Google Search, Gemini Image (Imagen was retired in favour of
-  // it in August 2026), TTS and the Live API, `gemini-embedding-2`. No sandbox
-  // that returns files, so no `code`.
-  google: ["text", "vision", "search", "image", "audio", "embed"],
-  // Live search over X, and Grok Imagine for pictures.
+  // `gpt-image-*` for pictures. Not `code`: the Code Interpreter container is
+  // behind the Responses API, which the assist path does not speak yet.
+  openai: ["text", "vision", "search", "image"],
+  // Gemini Image, after Imagen was retired in favour of it in August 2026.
+  google: ["text", "vision", "search", "image"],
+  // Grok Imagine for pictures.
   xai: ["text", "vision", "search", "image"],
   /**
-   * Text only, and the vendor this design exists for.
+   * Text and search, which is now most of the job.
    *
-   * No sandbox and no search, so "one model does the whole job" barely exists
-   * here — which is exactly the install that must be told what it is missing
-   * rather than left to discover it. Vision arrived in a 2026 experimental
-   * model and is not claimed for the vendor: it comes from the catalog entry's
-   * own `supportsVision`, which is where a capability that varies *within* a
-   * vendor belongs.
+   * Vision is deliberately absent at the vendor level even though a 2026
+   * DeepSeek model has it: that varies *within* the vendor, so it comes from the
+   * catalog entry's own `supportsVision`, which is where such a fact belongs.
    */
-  deepseek: ["text"],
-  zhipu: ["text", "vision"],
-  moonshot: ["text", "vision"],
-  mistral: ["text", "vision", "embed"],
+  deepseek: ["text", "search"],
+  zhipu: ["text", "vision", "search"],
+  moonshot: ["text", "vision", "search"],
+  mistral: ["text", "vision", "search"],
   // A gateway is whatever is behind it; claiming more would be guessing on the
   // user's behalf about models we have never seen.
-  openrouter: ["text", "vision"],
-  "self-hosted": ["text"],
+  openrouter: ["text", "vision", "search"],
+  "self-hosted": ["text", "search"],
 };
 
 /**
@@ -355,11 +394,13 @@ export function report(
    * unpaid* is fixed by pasting a key. Collapsing them produces the note that
    * tells somebody to pick an image model when they already have.
    */
-  const needsKey = resolved
+  const consumed = resolved.filter((entry) => CONSUMED_CAPABILITIES.includes(entry.capability));
+
+  const needsKey = consumed
     .filter((entry) => entry.needsKeyFrom !== undefined)
     .map((entry) => ({ capability: entry.capability, vendor: entry.needsKeyFrom! }));
 
-  const missing = resolved
+  const missing = consumed
     .filter((entry) => !entry.modelId && entry.needsKeyFrom === undefined)
     .map((entry) => entry.capability);
 
