@@ -3,8 +3,8 @@ import { ago, machine, now } from "@/lib/core";
 
 export const dynamic = "force-dynamic";
 
-export default function MachinePage() {
-  const state = machine();
+export default async function MachinePage() {
+  const state = await machine();
   const panel = machinePanel(state, now());
 
   return (

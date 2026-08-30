@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 const TIERS = ["nano", "worker", "frontier"] as const;
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
   const keys = storedKeys();
   const selected = selectedModels();
   const selection = buildCatalog(REFERENCE_CATALOG, selected);

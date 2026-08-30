@@ -31,3 +31,5 @@ export {
   setWorkspaceSql,
   WORKSPACE_SETTING,
 } from "./rls.js";
+
+export { assertRlsEnforceable, createPool, withWorkspace } from "./connection.js";

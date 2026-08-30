@@ -23,6 +23,9 @@ let client: pg.Client;
 
 /** Unique per run, so two runs of this suite never share a workspace. */
 const ALPHA = `ws-alpha-${randomUUID()}`;
+/** Task ids unique per run too — the same collision the workspace ids avoid. */
+const T_ALPHA = `t-alpha-${randomUUID()}`;
+const T_FORGED = `t-forged-${randomUUID()}`;
 const BETA = `ws-beta-${randomUUID()}`;
 
 async function asWorkspace<T>(workspaceId: string, work: () => Promise<T>): Promise<T> {
@@ -74,10 +77,10 @@ describeDb("row-level security holds in the database", () => {
     await client.query("BEGIN");
     const found = await asWorkspace(ALPHA, async () => {
       await client.query(
-        "INSERT INTO tasks (id, workspace_id, label) VALUES ('t-alpha', $1, 'Book dinner')",
-        [ALPHA]
+        "INSERT INTO tasks (id, workspace_id, label) VALUES ($1, $2, 'Book dinner')",
+        [T_ALPHA, ALPHA]
       );
-      return client.query("SELECT id FROM tasks WHERE id = 't-alpha'");
+      return client.query("SELECT id FROM tasks WHERE id = $1", [T_ALPHA]);
     });
     await client.query("COMMIT");
 
@@ -100,10 +103,10 @@ describeDb("row-level security holds in the database", () => {
   it("refuses to write a row into someone else's workspace", async () => {
     await client.query("BEGIN");
     const attempt = asWorkspace(BETA, () =>
-      client.query(
-        "INSERT INTO tasks (id, workspace_id, label) VALUES ('t-forged', $1, 'Not mine')",
-        [ALPHA]
-      )
+      client.query("INSERT INTO tasks (id, workspace_id, label) VALUES ($1, $2, 'Not mine')", [
+        T_FORGED,
+        ALPHA,
+      ])
     );
 
     await expect(attempt).rejects.toThrow(/row-level security/iu);

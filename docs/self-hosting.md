@@ -63,6 +63,28 @@ Tenant isolation would be silently disabled.
 If you are running Postgres yourself rather than through compose, create the
 application role the same way — see `appRoleSql()` in `packages/db`.
 
+## The dashboard
+
+```bash
+pnpm --filter @nell/web build
+pnpm --filter @nell/web start          # http://127.0.0.1:3000
+```
+
+Seven read-only pages over the same database the agent uses: tasks, approvals,
+the machine, the vault (labels and sites, never a value), memory, the audit
+chain, and model settings. It reads and never writes — the agent owns every
+mutation, and a second path into those tables with none of the gates attached
+would be exactly the hole the gates exist to close.
+
+> **⚠️ Bind it to localhost. There is no login yet.**
+>
+> The dashboard shows whatever belongs to `NELL_OWNER_TELEGRAM_ID` — the same
+> person who may text the bot — and does not ask who you are. On a laptop that
+> is fine and is how most people will run it. Exposed to a network it is an open
+> window onto one person's tasks, memory and vault labels. Authentication is
+> built in `@nell/auth` and is not wired to this yet, which is stated here
+> rather than left to be discovered.
+
 ## Running a build rather than the source
 
 ```bash

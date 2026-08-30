@@ -15,10 +15,10 @@ const PLAIN: Record<string, string> = {
   "message.outbound": "Sent a message",
 };
 
-export default function AuditPage() {
+export default async function AuditPage() {
   // Verification runs on every render rather than behind a button. The whole
   // point of hash-chaining a log is that nobody has to be trusted to check it.
-  const view = auditView(auditEntries());
+  const view = auditView(await auditEntries());
 
   return (
     <>

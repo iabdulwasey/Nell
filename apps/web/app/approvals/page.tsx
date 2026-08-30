@@ -61,8 +61,8 @@ function Card({ card }: { card: ApprovalCard }) {
   );
 }
 
-export default function ApprovalsPage() {
-  const pending = pendingApprovals();
+export default async function ApprovalsPage() {
+  const pending = await pendingApprovals();
 
   return (
     <>

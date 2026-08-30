@@ -3,10 +3,8 @@ import { ago, memories } from "@/lib/core";
 
 export const dynamic = "force-dynamic";
 
-export default function MemoryPage() {
-  const rows = memories()
-    .map(memoryRow)
-    .sort((a, b) => b.importance - a.importance);
+export default async function MemoryPage() {
+  const rows = (await memories()).map(memoryRow).sort((a, b) => b.importance - a.importance);
 
   return (
     <>

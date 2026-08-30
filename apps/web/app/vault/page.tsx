@@ -9,8 +9,8 @@ export const dynamic = "force-dynamic";
  * in CSS or truncating it in a template still means the value reached the
  * browser, and once it has left the server every later protection is decoration.
  */
-export default function VaultPage() {
-  const rows = vaultItems().map(vaultRow);
+export default async function VaultPage() {
+  const rows = (await vaultItems()).map(vaultRow);
 
   return (
     <>

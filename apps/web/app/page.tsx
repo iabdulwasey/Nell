@@ -12,8 +12,8 @@ const STATE_TAG: Record<string, string> = {
   cancelled: "",
 };
 
-export default function TasksPage() {
-  const groups = groupTasks(tasks());
+export default async function TasksPage() {
+  const groups = groupTasks(await tasks());
 
   return (
     <>
