@@ -503,6 +503,30 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 
+/**
+ * A rejection nobody awaited must not end the agent.
+ *
+ * The ticker has run on this principle since it was written — *"a tick never
+ * throws; whatever goes wrong, the process must still be here for the next
+ * one"* — and the agent itself did not. It cost a real task: a Playwright route
+ * handler lost a race, threw `Route is already handled!` into a promise nobody
+ * was awaiting, and Node ended the process **mid-booking**. What the user saw
+ * was the bot going silent.
+ *
+ * Logged loudly rather than swallowed. A crash that becomes a silent no-op is a
+ * worse bug than the crash — this is a long-running server, and the honest
+ * behaviour is to survive, complain, and let the next message be answered.
+ *
+ * Deliberately not `uncaughtException`: that leaves the process in a state
+ * nobody reasoned about, where continuing is a guess. An unhandled *rejection*
+ * is an async result nobody read, and the rest of the process is intact.
+ */
+process.on("unhandledRejection", (reason) => {
+  console.error(
+    `! unhandled rejection (surviving): ${reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason)}`
+  );
+});
+
 console.log(`model: ${modelId}`);
 console.log(`profiles: ${profileRoot}`);
 console.log(`owner: telegram ${owner!}`);

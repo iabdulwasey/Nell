@@ -20,7 +20,7 @@
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+import { chromium, type BrowserContext, type Page, type Route } from "playwright-core";
 import {
   MODEL_DISPLAY,
   type ComputerAction,
@@ -59,6 +59,54 @@ interface Live {
   readonly context: BrowserContext;
   readonly page: Page;
   cursor: Point;
+}
+
+/**
+ * The SSRF guard, as a route handler that cannot take the process down.
+ *
+ * **This crashed the agent in the field**, on an ordinary request — *"book me a
+ * romantic movie near UC Berkeley"* — and the crash is worth reading closely
+ * because the guard itself was right.
+ *
+ * `allow` resolves DNS, which is slow. In that window the page can navigate, be
+ * closed, or have the route settled another way; `route.continue()` then throws
+ * **"Route is already handled!"**. A throw inside a Playwright route handler
+ * becomes an *unhandled promise rejection* — nobody is awaiting it — and Node
+ * ends the process. So a benign race in a security check killed a running
+ * agent, mid-task, with a stack trace the user saw as silence.
+ *
+ * Two things are wrong with the original and both are fixed here. A route that
+ * is already handled is **not an error**: the request is gone, which is the
+ * outcome either branch was working towards. And a check that cannot be
+ * completed must **fail closed** — aborting rather than continuing — because
+ * "we could not decide" and "it is allowed" are different answers and only one
+ * of them is safe.
+ */
+export function guardForTest(allow: (url: string) => Promise<boolean>) {
+  return guard(allow);
+}
+
+function guard(allow: (url: string) => Promise<boolean>) {
+  return async (route: Route): Promise<void> => {
+    let permitted = false;
+    try {
+      permitted = await allow(route.request().url());
+    } catch {
+      // Fail closed: an undecidable request is refused, not waved through.
+      permitted = false;
+    }
+
+    try {
+      if (permitted) await route.continue();
+      else await route.abort("blockedbyclient");
+    } catch {
+      /**
+       * Already handled, or the page went away. Either way the request no
+       * longer exists and there is nothing to decide about it — which is a
+       * normal end to a navigation, not a reason to end the process.
+       */
+    }
+  };
 }
 
 export class LocalMachineHost implements MachineHost {
@@ -199,10 +247,7 @@ export class LocalMachineHost implements MachineHost {
     const { allow } = options;
 
     if (allow) {
-      await live.page.route("**/*", async (route) => {
-        if (await allow(route.request().url())) await route.continue();
-        else await route.abort("blockedbyclient");
-      });
+      await live.page.route("**/*", guard(allow));
     }
 
     try {
@@ -240,10 +285,7 @@ export class LocalMachineHost implements MachineHost {
     const { allow } = options;
 
     if (allow) {
-      await live.page.route("**/*", async (route) => {
-        if (await allow(route.request().url())) await route.continue();
-        else await route.abort("blockedbyclient");
-      });
+      await live.page.route("**/*", guard(allow));
     }
 
     try {
